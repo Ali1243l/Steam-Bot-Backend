@@ -126,46 +126,13 @@ async def execute_task_pipeline(
 
 @app.post("/api/process-task", response_model=TaskResponse, status_code=status.HTTP_202_ACCEPTED)
 async def process_task(payload: ProcessTaskRequest, background_tasks: BackgroundTasks):
-    """
-    Main dispatch endpoint:
-    - Finds the next available inventory account from Supabase.
-    - Dispatches the async automation pipeline in the background.
-    - Returns an immediate confirmation response with the assigned account ID.
-    """
     try:
         supabase = get_supabase_client()
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Database configuration error: {str(e)}",
-        )
-
-    # Fetch one 'available' record ordered by oldest first (FIFO)
-    query_result = (
-        supabase.table("stock_accounts")
-        .select("id, steam_username, steam_password, original_email, email_password, status")
-        .eq("status", "available")
-        .order("created_at", desc=False)
-        .limit(1)
-        .execute()
-    )
-
-    records = query_result.data
-    if not records:
-        logger.warning("[DISPATCH] No available accounts found in Supabase stock_accounts table.")
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No stock accounts currently available with status 'available'.",
-        )
-
-    target_record = records[0]
-    record_id = target_record["id"]
-
-    logger.info(f"[DISPATCH] Assigning record {record_id} ({target_record.get('steam_username')})")
-
-    # Queue execution pipeline without blocking the HTTP client
-    # Fetch account based on user selection or fallback to FIFO
-        query = supabase.table("stock_accounts").select("id, steam_username, steam_password, original_email, email_password, status").eq("status", "available")
+        
+        # 1. بناء الاستعلام حسب اختيار الحساب
+        query = supabase.table("stock_accounts").select(
+            "id, steam_username, steam_password, original_email, email_password, status"
+        ).eq("status", "available")
         
         if payload.account_id:
             logger.info(f"[DISPATCH] Specific account requested: {payload.account_id}")
@@ -173,17 +140,44 @@ async def process_task(payload: ProcessTaskRequest, background_tasks: Background
         else:
             logger.info("[DISPATCH] No specific account requested. Fetching oldest available.")
             query_result = query.order("created_at", desc=False).limit(1).execute()
-    )
+            
+        records = query_result.data
+        if not records:
+            logger.warning("[DISPATCH] No available accounts found in Supabase stock_accounts table.")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No stock accounts currently available with status 'available'."
+            )
 
-    return TaskResponse(
-        status="queued",
-        message="Task queued successfully for background execution.",
-        account_id=record_id,
-        order_reference=payload.order_reference,
-        dispatched_at=datetime.utcnow().isoformat(),
-    )
+        target_record = records[0]
+        record_id = target_record["id"]
+        logger.info(f"[DISPATCH] Assigning record {record_id} ({target_record.get('steam_username')})")
 
+        # 2. تشغيل المهمة بالخلفية بدون تعطيل الرد للفرونت إند
+        background_tasks.add_task(
+            execute_task_pipeline,
+            record_id=record_id,
+            account_data=target_record,
+            target_contact=payload.target_contact,
+            sender_filter=payload.sender_filter
+        )
 
+        return TaskResponse(
+            status="queued",
+            message="Task queued successfully for background execution.",
+            account_id=record_id,
+            order_reference=payload.order_reference,
+            dispatched_at=datetime.utcnow().isoformat()
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[DISPATCH:FAIL] Database configuration error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Database configuration error: {str(e)}"
+        )
 @app.get("/healthz", tags=["Monitoring"])
 async def health_check():
     """Simple health check endpoint for VPS uptime monitors or load balancers."""
