@@ -1,6 +1,6 @@
 """
-browser_engine.py - React-Compatible Steam Login & Live Verification Engine
-Emulates real keyboard typing for React/Redux forms and captures UI state screenshots.
+browser_engine.py - Full Production Playwright Automation Engine
+Bypasses Steam UI menu overlays using Keyboard Tab Navigation and Force Input.
 """
 
 import re
@@ -75,20 +75,20 @@ async def fetch_code_via_browser(page: Page, email_addr: str, email_pass: str) -
         
         email_selector = 'input[name="loginfmt"], input[type="email"], #i0116'
         await mail_page.wait_for_selector(email_selector, timeout=10000)
-        await mail_page.click(email_selector)
-        await mail_page.keyboard.type(email_addr, delay=30)
-        await mail_page.click('input[type="submit"], #idSIButton9')
+        await mail_page.focus(email_selector)
+        await mail_page.fill(email_selector, email_addr, force=True)
+        await mail_page.click('input[type="submit"], #idSIButton9', force=True)
         await asyncio.sleep(2)
         
         pass_selector = 'input[name="passwd"], input[type="password"], #i0118'
         await mail_page.wait_for_selector(pass_selector, timeout=10000)
-        await mail_page.click(pass_selector)
-        await mail_page.keyboard.type(email_pass, delay=30)
-        await mail_page.click('input[type="submit"], #idSIButton9')
+        await mail_page.focus(pass_selector)
+        await mail_page.fill(pass_selector, email_pass, force=True)
+        await mail_page.click('input[type="submit"], #idSIButton9', force=True)
         await asyncio.sleep(3)
         
         if await mail_page.is_visible('input[id="acceptButton"]'):
-            await mail_page.click('input[id="acceptButton"]')
+            await mail_page.click('input[id="acceptButton"]', force=True)
             
         await asyncio.sleep(4)
         await mail_page.goto("https://outlook.live.com/mail/0/", wait_until="networkidle")
@@ -174,29 +174,30 @@ class AutomationRunner:
             await page.goto("https://store.steampowered.com/login/", wait_until="networkidle")
             await asyncio.sleep(2)
 
-            # Step 2: Fill Steam Username and Password via React-compatible Keyboard Typing
-            logger.info("[STEP 2] Typing credentials into Steam React Form...")
+            # Step 2: Keyboard Tab Focus to bypass overlapping menu overlays
+            logger.info("[STEP 2] Typing credentials via Keyboard Focus (Bypassing Overlays)...")
             
             user_input = page.locator('input[type="text"]').first
             pass_input = page.locator('input[type="password"]').first
             
-            await user_input.click()
-            await user_input.fill("")
-            await page.keyboard.type(str(steam_user), delay=30)
-            
-            await pass_input.click()
-            await pass_input.fill("")
-            await page.keyboard.type(str(steam_pass), delay=30)
-            
+            # Fill Username cleanly
+            await user_input.scroll_into_view_if_needed()
+            await user_input.focus()
+            await user_input.fill(str(steam_user), force=True)
             await asyncio.sleep(1)
 
-            # Click Sign In button
-            submit_btn = page.locator('button[type="submit"]').first
-            await submit_btn.click()
-            logger.info("[STEP 3] Login submitted! Waiting for Steam response...")
-            await asyncio.sleep(4)
+            # Fill Password cleanly without click-interception
+            await pass_input.scroll_into_view_if_needed()
+            await pass_input.focus()
+            await pass_input.fill(str(steam_pass), force=True)
+            await asyncio.sleep(1)
 
-            # Capture screenshot immediately after submit
+            # Press Enter on Keyboard to submit
+            logger.info("[STEP 3] Submitting login via Keyboard Enter...")
+            await page.keyboard.press("Enter")
+            await asyncio.sleep(5)
+
+            # Capture screenshot immediately
             await page.screenshot(path="./artifacts/screenshots/steam_after_submit.png")
             
             page_text = await page.content()
@@ -213,12 +214,13 @@ class AutomationRunner:
                 
             logger.info(f"[STEP 5] Verification Code Extracted Successfully: {code}")
 
-            # Step 5: Input Verification Code into Steam Guard UI Prompt
+            # Step 5: Input Verification Code
             guard_input = await page.wait_for_selector('input[type="text"]', timeout=10000)
             if guard_input:
-                await guard_input.click()
-                await page.keyboard.type(code, delay=50)
-                logger.info("[STEP 6] Code entered into Steam Guard input prompt!")
+                await guard_input.focus()
+                await guard_input.fill(code, force=True)
+                await page.keyboard.press("Enter")
+                logger.info("[STEP 6] Code submitted to Steam Guard!")
 
             await page.screenshot(path="./artifacts/screenshots/login_success.png")
             return {"status": "success", "code": code}
