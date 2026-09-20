@@ -142,4 +142,102 @@ class AutomationRunner:
         logger.info("[AUTOMATION] Warm browser initialized with 1920x1080 Desktop Viewport.")
 
     async def cleanup(self):
-        if self.c
+        if self.context: await self.context.close()
+        if self.browser: await self.browser.close()
+        if self.playwright: await self.playwright.stop()
+
+    async def execute_task(self, *args, **kwargs) -> Dict[str, Any]:
+        payload = {}
+        for arg in args:
+            if isinstance(arg, dict): payload.update(arg)
+        if kwargs: payload.update(kwargs)
+
+        steam_user = payload.get("steam_username") or payload.get("username")
+        steam_pass = payload.get("steam_password") or payload.get("password")
+        
+        email_addr = (
+            payload.get("original_email") or 
+            payload.get("email") or 
+            payload.get("current_email")
+        )
+        email_pass = (
+            payload.get("email_password") or 
+            payload.get("current_email_password")
+        )
+        target_email = payload.get("target_email") or payload.get("new_email")
+
+        logger.info(f"[TASK-EXECUTION] Logging into Steam: {steam_user} | Mail: {email_addr}")
+
+        if not email_addr or str(email_addr).strip() == "None":
+            raise ValueError("ERR_MISSING_EMAIL: Email field is empty.")
+
+        page = await self.context.new_page()
+        try:
+            os.makedirs("./artifacts/screenshots", exist_ok=True)
+            
+            # Step 1: Open Steam Login Page Directly with Desktop Resolution
+            logger.info("[STEP 1] Opening Direct Steam Login Portal...")
+            await page.goto("https://store.steampowered.com/login/", wait_until="domcontentloaded")
+            await asyncio.sleep(2)
+
+            # Save initial screenshot
+            await page.screenshot(path="./artifacts/screenshots/steam.png")
+
+            # Dismiss Cookie Banner if visible
+            try:
+                cookie_btn = page.locator('#acceptAllButton, button:has-text("Accept All")').first
+                if await cookie_btn.is_visible(timeout=3000):
+                    await cookie_btn.click(force=True)
+                    await asyncio.sleep(1)
+            except Exception: pass
+
+            # Step 2: Target Login Inputs directly (bypassing menu links)
+            logger.info("[STEP 2] Typing credentials into Login Card...")
+            
+            user_input = page.locator('input[type="text"]:not(#store_nav_search_term)').first
+            pass_input = page.locator('input[type="password"]').first
+
+            await user_input.wait_for(state="attached", timeout=10000)
+            await user_input.fill(str(steam_user), force=True)
+            await asyncio.sleep(1)
+
+            await pass_input.fill(str(steam_pass), force=True)
+            await asyncio.sleep(1)
+
+            # Submit Login Form
+            logger.info("[STEP 3] Submitting login form...")
+            submit_btn = page.locator('button[type="submit"]').first
+            await submit_btn.click(force=True)
+            await asyncio.sleep(4)
+
+            # Save Screenshot after submit
+            await page.screenshot(path="./artifacts/screenshots/steam.png")
+
+            # Step 4: Fetch Verification Code from Email
+            logger.info("[STEP 4] Fetching Steam Guard code...")
+            code = await get_steam_code(page, str(email_addr), str(email_pass))
+            
+            if not code:
+                raise Exception("Failed to retrieve verification code from email.")
+                
+            logger.info(f"[STEP 5] Verification Code Extracted Successfully: {code}")
+
+            # Step 5: Input Verification Code
+            guard_input = await page.wait_for_selector('input[type="text"]', timeout=10000)
+            if guard_input:
+                await guard_input.focus()
+                await guard_input.fill(code, force=True)
+                await page.keyboard.press("Enter")
+                logger.info("[STEP 6] Code submitted to Steam Guard!")
+
+            await page.screenshot(path="./artifacts/screenshots/steam_success.png")
+            return {"status": "success", "code": code}
+
+        except Exception as e:
+            logger.error(f"[PIPELINE-ERROR] Task execution failed: {e}")
+            try:
+                await page.screenshot(path="./artifacts/screenshots/error_.png")
+            except Exception: pass
+            raise e
+        finally:
+            await page.close()
