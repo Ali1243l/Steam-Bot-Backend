@@ -36,37 +36,36 @@ class AutomationRunner:
         email_pass = task_payload.get("email_password")
         new_email = task_payload.get("target_contact")
 
-        logger.info(f"Logging into Steam for user: {steam_user}")
+        try:
+            logger.info(f"Logging into Steam for user: {steam_user}")
             await page.goto("https://store.steampowered.com/login/", wait_until="networkidle", timeout=30000)
 
-            # 1. إدخال بيانات ستيم باستخدام المحددات الدقيقة
+            # 1. إدخال بيانات ستيم بالمحددات الدقيقة
             await page.wait_for_selector("input#input_username", timeout=15000)
             await page.fill("input#input_username", steam_user)
-            
+
             await page.wait_for_selector("input#input_password", timeout=15000)
             await page.fill("input#input_password", steam_pass)
-            
+
             await page.click("button[type='submit']")
 
             # انتظار تسجيل الدخول
             await page.wait_for_timeout(7000)
 
-            # 2. التوجه مباشرة لرابط تغيير الإيميل
+            # 2. التوجه لرابط تغيير الإيميل
             logger.info("Navigating to Steam Change Email wizard...")
             await page.goto("https://help.steampowered.com/en/wizard/HelpChangeEmail/", wait_until="networkidle", timeout=30000)
             await page.wait_for_timeout(3000)
 
-            # 3. الضغط على زر إرسال الكود للإيميل القديم
+            # 3. طلب كود التحقق
             send_code_btn = await page.query_selector("button:has-text('Email'), .btn_blue_steamui")
             if send_code_btn:
                 await send_code_btn.click()
                 logger.info("Clicked request verification code on Steam.")
-            else:
-                logger.info("Proceeding to code verification stage...")
 
             await page.wait_for_timeout(5000)
 
-            # 4. جلب الكود من صندوق xomail
+            # 4. جلب الكود من xomail
             logger.info(f"Fetching code from xomail for: {orig_email}")
             verification_code = await fetch_code_from_xomail(
                 context=context,
@@ -76,16 +75,16 @@ class AutomationRunner:
             )
             logger.info(f"Extracted Verification Code: {verification_code}")
 
-            # 5. إدخال الكود المستلم في صفحة ستيم
+            # 5. كتابة الكود وتأكيده
             code_input = await page.wait_for_selector("input[type='text'], input[name='code']", timeout=15000)
             await code_input.fill(verification_code)
-            
+
             submit_btn = await page.query_selector("button[type='submit'], .btn_blue_steamui")
             if submit_btn:
                 await submit_btn.click()
             await page.wait_for_timeout(4000)
 
-            # 6. كتابة الإيميل الجديد وحفظه
+            # 6. كتابة وتأكيد الإيميل الجديد
             logger.info(f"Entering new target email: {new_email}")
             new_email_input = await page.wait_for_selector("input#email, input[type='email'], input[name='new_email']", timeout=15000)
             await new_email_input.fill(new_email)
