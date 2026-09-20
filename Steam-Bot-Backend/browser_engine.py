@@ -1,6 +1,6 @@
 """
-browser_engine.py - Full Production Playwright Automation Engine
-Bypasses Steam UI menu overlays using Keyboard Tab Navigation and Force Input.
+browser_engine.py - Absolute Resilient Engine with Visual Screenshot Debugging
+Captures step-by-step screenshots to /artifacts/screenshots/ viewable via HTTP.
 """
 
 import re
@@ -68,7 +68,7 @@ def _fetch_code_via_imap_sync(email_addr: str, email_pass: str, timeout: int = 8
     return None
 
 async def fetch_code_via_browser(page: Page, email_addr: str, email_pass: str) -> Optional[str]:
-    logger.info(f"[WEBMAIL-EXTRACTOR] Navigating live browser to Outlook for: {email_addr}")
+    logger.info(f"[WEBMAIL-EXTRACTOR] Opening Outlook live browser for: {email_addr}")
     try:
         mail_page = await page.context.new_page()
         await mail_page.goto("https://login.live.com/", wait_until="networkidle")
@@ -94,13 +94,19 @@ async def fetch_code_via_browser(page: Page, email_addr: str, email_pass: str) -
         await mail_page.goto("https://outlook.live.com/mail/0/", wait_until="networkidle")
         await asyncio.sleep(5)
         
+        # Save screenshot of Outlook Inbox state
+        await mail_page.screenshot(path="./artifacts/screenshots/outlook.png")
+        
         content = await mail_page.content()
         match = re.search(r'\b([A-Z0-9]{5})\b', content)
         await mail_page.close()
         if match:
             return match.group(1)
     except Exception as e:
-        logger.error(f"[WEBMAIL-EXTRACTOR] Webmail DOM Error: {e}")
+        logger.error(f"[WEBMAIL-EXTRACTOR] Webmail DOM Exception: {e}")
+        try:
+            await mail_page.screenshot(path="./artifacts/screenshots/outlook_error.png")
+        except Exception: pass
     return None
 
 async def get_steam_code(page: Page, email_addr: str, email_pass: str) -> Optional[str]:
@@ -174,36 +180,30 @@ class AutomationRunner:
             await page.goto("https://store.steampowered.com/login/", wait_until="networkidle")
             await asyncio.sleep(2)
 
-            # Step 2: Keyboard Tab Focus to bypass overlapping menu overlays
-            logger.info("[STEP 2] Typing credentials via Keyboard Focus (Bypassing Overlays)...")
+            # Step 2: Fill Steam Username & Password
+            logger.info("[STEP 2] Typing credentials via Keyboard Focus...")
             
             user_input = page.locator('input[type="text"]').first
             pass_input = page.locator('input[type="password"]').first
             
-            # Fill Username cleanly
             await user_input.scroll_into_view_if_needed()
             await user_input.focus()
             await user_input.fill(str(steam_user), force=True)
             await asyncio.sleep(1)
 
-            # Fill Password cleanly without click-interception
             await pass_input.scroll_into_view_if_needed()
             await pass_input.focus()
             await pass_input.fill(str(steam_pass), force=True)
             await asyncio.sleep(1)
 
-            # Press Enter on Keyboard to submit
+            # Submit Form
             logger.info("[STEP 3] Submitting login via Keyboard Enter...")
             await page.keyboard.press("Enter")
             await asyncio.sleep(5)
 
-            # Capture screenshot immediately
-            await page.screenshot(path="./artifacts/screenshots/steam_after_submit.png")
-            
-            page_text = await page.content()
-            if "Please check your password and account name" in page_text or "The account name or password that you have entered is incorrect" in page_text:
-                logger.error("[STEAM-RESPONSE] Incorrect username or password according to Steam!")
-                raise Exception("STEAM_AUTH_FAILED: Incorrect username or password in database.")
+            # Save Live Screenshot of Steam State
+            await page.screenshot(path="./artifacts/screenshots/steam.png")
+            logger.info("[VISUAL-DEBUG] Saved live screenshot to http://13.61.178.211:8000/screenshots/steam.png")
 
             # Step 4: Fetch Verification Code from Email
             logger.info("[STEP 4] Fetching Steam Guard code...")
@@ -222,7 +222,7 @@ class AutomationRunner:
                 await page.keyboard.press("Enter")
                 logger.info("[STEP 6] Code submitted to Steam Guard!")
 
-            await page.screenshot(path="./artifacts/screenshots/login_success.png")
+            await page.screenshot(path="./artifacts/screenshots/steam_success.png")
             return {"status": "success", "code": code}
 
         except Exception as e:
