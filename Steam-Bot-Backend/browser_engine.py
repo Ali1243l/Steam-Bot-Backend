@@ -1,6 +1,6 @@
 """
-browser_engine.py - Resilient Steam Portal Automation Engine
-Instant Screenshot Generation + Dynamic 1-Step/2-Step Steam Login Handler.
+browser_engine.py - Precision Scoped Steam Login Engine
+Clicks top-right 'sign in' header link and targets the mounted login dialog exclusively.
 """
 
 import re
@@ -174,40 +174,45 @@ class AutomationRunner:
         try:
             os.makedirs("./artifacts/screenshots", exist_ok=True)
             
-            # Step 1: Open Pure Steam Auth Portal
-            logger.info("[STEP 1] Navigating to https://login.steampowered.com/...")
-            await page.goto("https://login.steampowered.com/", wait_until="domcontentloaded")
+            # Step 1: Open Steam Store Homepage
+            logger.info("[STEP 1] Opening Steam Homepage...")
+            await page.goto("https://store.steampowered.com/", wait_until="domcontentloaded")
+            await asyncio.sleep(2)
+
+            # Step 2: Click the 'sign in' button in the top right header (as seen in screenshot!)
+            logger.info("[STEP 2] Clicking top-right 'sign in' header button...")
+            signin_link = page.locator('a.global_action_link, a[href*="login"]').first
+            await signin_link.wait_for(state="visible", timeout=10000)
+            await signin_link.click(force=True)
             await asyncio.sleep(3)
 
-            # Instant Screenshot Save so user can open http://13.61.178.211:8000/screenshots/steam.png immediately!
+            # Save Screenshot of Opened Login Card
             await page.screenshot(path="./artifacts/screenshots/steam.png")
-            logger.info("[VISUAL] Initial page screenshot captured.")
 
-            # Step 2: Fill Username
-            logger.info("[STEP 2] Waiting for username input field...")
-            user_input = await page.wait_for_selector('input[type="text"]', timeout=15000)
-            await user_input.fill(str(steam_user))
+            # Step 3: Target inputs inside the Login Card exclusively
+            logger.info("[STEP 3] Target inputs inside the open login dialog...")
+            
+            # Scoped container for login form
+            login_form = page.locator('form, div._2GB2i2y3_9yP6Rk33O7P3m, div.new_login_dialog').first
+            await login_form.wait_for(state="visible", timeout=15000)
+
+            user_input = login_form.locator('input[type="text"]').first
+            pass_input = login_form.locator('input[type="password"]').first
+
+            # Fill Username
+            await user_input.focus()
+            await user_input.fill(str(steam_user), force=True)
             await asyncio.sleep(1)
 
-            # Check if Password field is visible or requires clicking Next
-            pass_locator = page.locator('input[type="password"]').first
-            if not await pass_locator.is_visible():
-                logger.info("[STEP 2.5] Password field dynamic mount trigger...")
-                submit_btn = page.locator('button[type="submit"]').first
-                if await submit_btn.is_visible():
-                    await submit_btn.click()
-                    await asyncio.sleep(2)
-
-            # Step 3: Fill Password
-            logger.info("[STEP 3] Waiting for password input field...")
-            pass_input = await page.wait_for_selector('input[type="password"]', timeout=15000)
-            await pass_input.fill(str(steam_pass))
+            # Fill Password
+            await pass_input.focus()
+            await pass_input.fill(str(steam_pass), force=True)
             await asyncio.sleep(1)
 
             # Submit Login Form
             logger.info("[STEP 4] Submitting login form...")
-            submit_btn = page.locator('button[type="submit"]').first
-            await submit_btn.click()
+            submit_btn = login_form.locator('button[type="submit"]').first
+            await submit_btn.click(force=True)
             await asyncio.sleep(5)
 
             # Update Screenshot after submission
@@ -225,7 +230,8 @@ class AutomationRunner:
             # Step 6: Input Verification Code
             guard_input = await page.wait_for_selector('input[type="text"]', timeout=10000)
             if guard_input:
-                await guard_input.fill(code)
+                await guard_input.focus()
+                await guard_input.fill(code, force=True)
                 await page.keyboard.press("Enter")
                 logger.info("[STEP 7] Code submitted to Steam Guard!")
 
