@@ -14,30 +14,51 @@ class MailWorker:
         self.is_outlook = any(d in email.lower() for d in ["outlook", "hotmail", "live.com"])
 
     async def pre_login(self):
-        """تسجيل الدخول المبكر بالتوازي"""
+        """تسجيل الدخول المبكر لـ Outlook أو Xomail"""
         self.page = await self.context.new_page()
         try:
             if self.is_outlook:
-                logger.info(f"[OUTLOOK:PARALLEL] Navigating to login for {self.email}...")
-                await self.page.goto("https://login.live.com/", wait_until="domcontentloaded", timeout=30000)
+                logger.info(f"[OUTLOOK:PARALLEL] Navigating to direct login for {self.email}...")
+                # استخدام الرابط المباشر لتسجيل الدخول الفوري دون صفحات هبوط
+                await self.page.goto("https://outlook.live.com/owa/?nlp=1", wait_until="domcontentloaded", timeout=35000)
 
-                # إدخال الإيميل
-                email_input = await self.page.wait_for_selector("input[type='email'], input[name='loginfmt']", timeout=15000)
+                # 1. إدخال الإيميل
+                email_selector = "input#i0116, input[name='loginfmt'], input[type='email'], input[type='text']:visible"
+                email_input = await self.page.wait_for_selector(email_selector, timeout=20000)
+                await email_input.click(force=True)
+                await email_input.fill("")
                 await email_input.fill(self.email)
                 await self.page.keyboard.press("Enter")
-                await asyncio.sleep(2)
+                
+                # زر التالي إن لم يستجب Enter
+                next_btn = await self.page.query_selector("input#idSIButton9, button[type='submit']")
+                if next_btn:
+                    try:
+                        await next_btn.click(force=True)
+                    except Exception:
+                        pass
 
-                # إدخال كلمة المرور
-                pwd_input = await self.page.wait_for_selector("input[type='password'], input[name='passwd']", timeout=15000)
+                await asyncio.sleep(2.5)
+
+                # 2. إدخال كلمة المرور
+                pwd_selector = "input#i0118, input[name='passwd'], input[type='password']:visible"
+                pwd_input = await self.page.wait_for_selector(pwd_selector, timeout=20000)
+                await pwd_input.click(force=True)
+                await pwd_input.fill("")
                 await pwd_input.fill(self.password)
                 await self.page.keyboard.press("Enter")
 
-                # انتظار انتهاء إعادة التوجيه حتى لا ينكسر الـ Context
-                await self.page.wait_for_load_state("domcontentloaded")
+                submit_pwd_btn = await self.page.query_selector("input#idSIButton9, button[type='submit']")
+                if submit_pwd_btn:
+                    try:
+                        await submit_pwd_btn.click(force=True)
+                    except Exception:
+                        pass
+
                 await asyncio.sleep(3)
 
-                # تخطي شاشة "Stay signed in?"
-                decline_btn = await self.page.query_selector("input#declineButton, input#idSIButton9, button:has-text('No'), input[value='No']")
+                # 3. تخطي شاشة "Stay signed in?"
+                decline_btn = await self.page.query_selector("input#declineButton, input#idBtn_Back, button:has-text('No'), input[value='No']")
                 if decline_btn:
                     try:
                         await decline_btn.click(force=True)
@@ -45,9 +66,9 @@ class MailWorker:
                     except Exception:
                         pass
 
-                logger.info("[OUTLOOK:PARALLEL] Moving to mailbox...")
+                logger.info("[OUTLOOK:PARALLEL] Navigating to mailbox...")
                 await self.page.goto("https://outlook.live.com/mail/0/inbox", wait_until="domcontentloaded", timeout=40000)
-                logger.info("[OUTLOOK:PARALLEL] Outlook Inbox loaded and standing by.")
+                logger.info("[OUTLOOK:PARALLEL] Outlook inbox ready and standing by.")
             else:
                 logger.info(f"[MAIL:PARALLEL] Opening xomail for {self.email}...")
                 await self.page.goto("http://xomail.club/", wait_until="domcontentloaded", timeout=25000)
@@ -56,19 +77,19 @@ class MailWorker:
                 await self.page.fill("#rcmloginpwd", self.password)
                 await self.page.keyboard.press("Enter")
                 await self.page.wait_for_selector("table#messagelist", timeout=15000)
-                logger.info("[MAIL:PARALLEL] xomail Inbox ready.")
+                logger.info("[MAIL:PARALLEL] xomail inbox ready.")
         except Exception as e:
             logger.warning(f"[MAIL:PRE_LOGIN_WARN] Pre-login issue: {str(e)}")
 
     async def fetch_code(self, timeout_seconds: int = 50) -> str:
-        """سحب الكود من الرسالة"""
+        """استخراج كود ستيم من البريد"""
         if not self.page or self.page.is_closed():
             await self.pre_login()
 
         logger.info(f"[MAIL:FETCH] Monitoring incoming Steam verification email for {self.email}...")
 
         if self.is_outlook:
-            # البحث عن رسالة ستيم
+            # البحث عن رسالة ستيم في Outlook
             steam_msg_selector = "xpath=//div[@role='option'][contains(., 'Steam')] | xpath=//div[@aria-label and contains(@aria-label, 'Steam')] | div:has-text('Steam Support')"
             msg_clicked = False
 
@@ -86,7 +107,6 @@ class MailWorker:
             await asyncio.sleep(2)
             body_text = await self.page.inner_text("body")
 
-            # التقاط الكود (حروف وأرقام 5 خانات)
             match = re.search(r"(?:credentials:|code:?)\s*([A-Z0-9]{5})\b", body_text, re.IGNORECASE)
             if match:
                 return match.group(1).upper()
