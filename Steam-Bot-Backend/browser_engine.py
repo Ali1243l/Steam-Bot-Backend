@@ -36,15 +36,16 @@ class AutomationRunner:
         email_pass = task_payload.get("email_password")
         new_email = task_payload.get("target_contact")
 
-        try:
-            logger.info(f"Logging into Steam for user: {steam_user}")
+        logger.info(f"Logging into Steam for user: {steam_user}")
             await page.goto("https://store.steampowered.com/login/", wait_until="networkidle", timeout=30000)
 
-            # 1. إدخال بيانات ستيم
-            inputs = await page.query_selector_all("input[type='text']")
-            if inputs:
-                await inputs[0].fill(steam_user)
-            await page.fill("input[type='password']", steam_pass)
+            # 1. إدخال بيانات ستيم باستخدام المحددات الدقيقة
+            await page.wait_for_selector("input#input_username", timeout=15000)
+            await page.fill("input#input_username", steam_user)
+            
+            await page.wait_for_selector("input#input_password", timeout=15000)
+            await page.fill("input#input_password", steam_pass)
+            
             await page.click("button[type='submit']")
 
             # انتظار تسجيل الدخول
