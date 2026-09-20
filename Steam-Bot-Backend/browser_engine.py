@@ -30,22 +30,19 @@ class AutomationRunner:
             )
 
     async def _sign_out_everywhere(self, page):
-        """تسجيل خروج كامل وتأكيد النافذة المنبثقة"""
+        """تسجيل خروج كامل من الجلسات بدون أخطاء محددات"""
         try:
             logger.info("[LOGOUT] Opening authorized devices to sign out everywhere...")
             await page.goto("https://store.steampowered.com/account/authorizeddevices", wait_until="domcontentloaded", timeout=20000)
             await page.wait_for_timeout(2000)
 
-            sign_out_btn = await page.wait_for_selector(
-                "button:has-text('Sign out everywhere'), .btn_red_white_text, xpath=//button[contains(., 'Sign out everywhere')]",
-                timeout=10000
-            )
+            # استخدام محدد CSS صريح بدون خلط XPath
+            sign_out_btn = await page.wait_for_selector("button.btn_red_white_text, button:has-text('Sign out everywhere')", timeout=8000)
             if sign_out_btn:
                 await sign_out_btn.click(force=True)
                 logger.info("[LOGOUT] Clicked primary sign out button. Confirming modal dialog...")
                 await page.wait_for_timeout(1500)
 
-                # الضغط على زر التأكيد داخل النافذة المنبثقة (Modal Confirm Button)
                 confirm_modal_btn = await page.wait_for_selector(
                     ".newmodal button:has-text('Sign out everywhere'), .modal_frame button:has-text('Sign out'), .btn_medium.btn_green_steamui, .DialogButton._Primary",
                     timeout=8000
@@ -90,7 +87,7 @@ class AutomationRunner:
 
                 await page.wait_for_timeout(3000)
 
-            # إرسال الكود
+            # طلب إرسال الكود
             target_button = await page.wait_for_selector(
                 "xpath=//a[contains(., 'Email an account verification code')] | //button[contains(., 'Email an account verification code')]",
                 timeout=15000
@@ -101,20 +98,20 @@ class AutomationRunner:
 
             await page.wait_for_timeout(3000)
 
-            # استخراج الكود باستخدام الدالة المرنة الذكية
+            # استخراج الكود باستخدام الدالة المرنة (xomail أو outlook)
             logger.info(f"Fetching code for email: {orig_email}")
             change_email_code = await fetch_steam_code(
                 context=context,
                 email=orig_email,
                 password=email_pass,
-                timeout_seconds=35
+                timeout_seconds=45
             )
             logger.info(f"[STEAM_VERIFICATION_CODE]: {change_email_code}")
 
             await page.wait_for_load_state("domcontentloaded")
             await page.wait_for_timeout(1500)
 
-            # إدخال الكود الأول
+            # إدخال الكود الأول بصفحة ستيم
             code_selectors = [
                 "input#email_reset_code",
                 "input[name='code']",
@@ -141,7 +138,7 @@ class AutomationRunner:
 
             await page.wait_for_timeout(2500)
 
-            # كتابة الإيميل الجديد
+            # إدخال الإيميل الجديد
             logger.info(f"Entering target new email: {new_email}")
             new_email_selector = "input#email_input, input#email, input[name='new_email'], input[type='text']:not([readonly]):visible"
             new_email_input = await page.wait_for_selector(new_email_selector, timeout=20000)
@@ -159,7 +156,7 @@ class AutomationRunner:
 
             await page.wait_for_timeout(3000)
 
-            # مهلة الـ 15 دقيقة لانتظار كود الواجهة
+            # انتظار الكود من الواجهة (مهلة 15 دقيقة)
             if self.supabase and account_id:
                 logger.info(f"[WAITING] Waiting for user input from UI (Timeout: 15 minutes) for account {account_id}...")
                 self.supabase.table("stock_accounts").update({
@@ -195,7 +192,7 @@ class AutomationRunner:
 
                 await page.wait_for_timeout(3000)
 
-            # تسجيل الخروج الشامل وتأكيد المودال
+            # تسجيل الخروج الشامل
             await self._sign_out_everywhere(page)
 
             logger.info("Process finished successfully! Steam email updated & sessions cleared.")
