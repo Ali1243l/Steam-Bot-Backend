@@ -1,6 +1,6 @@
 """
-browser_engine.py - Full Desktop Viewport Engine
-Sets browser resolution to 1920x1080 to prevent responsive UI hidden element timeouts.
+browser_engine.py - Exact Scoped Login Card Engine
+Scopes inputs strictly inside the 'SIGN IN WITH ACCOUNT NAME' container.
 """
 
 import re
@@ -134,12 +134,11 @@ class AutomationRunner:
             launch_opts["proxy"] = {"server": self.proxy_url}
             
         self.browser = await self.playwright.chromium.launch(**launch_opts)
-        # Forced Full HD Desktop Viewport (1920x1080) to prevent responsive hidden elements
         self.context = await self.browser.new_context(
             viewport={"width": 1920, "height": 1080},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         )
-        logger.info("[AUTOMATION] Warm browser initialized with 1920x1080 Desktop Viewport.")
+        logger.info("[AUTOMATION] Warm browser initialized with 1920x1080 Viewport.")
 
     async def cleanup(self):
         if self.context: await self.context.close()
@@ -175,42 +174,45 @@ class AutomationRunner:
         try:
             os.makedirs("./artifacts/screenshots", exist_ok=True)
             
-            # Step 1: Open Steam Login Page Directly with Desktop Resolution
-            logger.info("[STEP 1] Opening Direct Steam Login Portal...")
+            # Step 1: Open Steam Login Page directly
+            logger.info("[STEP 1] Opening Steam Direct Login Portal...")
             await page.goto("https://store.steampowered.com/login/", wait_until="domcontentloaded")
             await asyncio.sleep(2)
 
-            # Save initial screenshot
-            await page.screenshot(path="./artifacts/screenshots/steam.png")
-
-            # Dismiss Cookie Banner if visible
-            try:
-                cookie_btn = page.locator('#acceptAllButton, button:has-text("Accept All")').first
-                if await cookie_btn.is_visible(timeout=3000):
-                    await cookie_btn.click(force=True)
-                    await asyncio.sleep(1)
-            except Exception: pass
-
-            # Step 2: Target Login Inputs directly (bypassing menu links)
-            logger.info("[STEP 2] Typing credentials into Login Card...")
+            # Step 2: Target strictly inside the Sign-In Card containing text "SIGN IN WITH ACCOUNT NAME"
+            logger.info("[STEP 2] Scoping central card containing 'SIGN IN WITH ACCOUNT NAME'...")
             
-            user_input = page.locator('input[type="text"]:not(#store_nav_search_term)').first
-            pass_input = page.locator('input[type="password"]').first
+            # Find the card containing the exact text seen in Screenshot 2
+            login_card = page.locator('div:has-text("SIGN IN WITH ACCOUNT NAME")').last
+            await login_card.wait_for(state="visible", timeout=15000)
 
-            await user_input.wait_for(state="attached", timeout=10000)
-            await user_input.fill(str(steam_user), force=True)
+            # Locate text and password inputs STRICTLY INSIDE this central card
+            user_input = login_card.locator('input[type="text"]').first
+            pass_input = login_card.locator('input[type="password"]').first
+
+            # Fill Username
+            await user_input.click()
+            await user_input.fill("")
+            await user_input.fill(str(steam_user))
             await asyncio.sleep(1)
 
-            await pass_input.fill(str(steam_pass), force=True)
+            # Fill Password
+            await pass_input.click()
+            await pass_input.fill("")
+            await pass_input.fill(str(steam_pass))
             await asyncio.sleep(1)
 
-            # Submit Login Form
-            logger.info("[STEP 3] Submitting login form...")
-            submit_btn = page.locator('button[type="submit"]').first
-            await submit_btn.click(force=True)
-            await asyncio.sleep(4)
+            # Capture Screenshot BEFORE Submit to visually verify text sitting inside SIGN IN WITH ACCOUNT NAME box!
+            await page.screenshot(path="./artifacts/screenshots/steam.png")
+            logger.info("[VISUAL] Verified inputs sitting inside central Sign-In box!")
 
-            # Save Screenshot after submit
+            # Step 3: Click the blue "Sign in" button inside this card
+            logger.info("[STEP 3] Submitting login via Sign in button...")
+            submit_btn = login_card.locator('button:has-text("Sign in"), button[type="submit"]').first
+            await submit_btn.click()
+            await asyncio.sleep(5)
+
+            # Save Screenshot AFTER submit
             await page.screenshot(path="./artifacts/screenshots/steam.png")
 
             # Step 4: Fetch Verification Code from Email
