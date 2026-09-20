@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 from playwright.async_api import async_playwright
-from mail_extractor import fetch_steam_code
+from mail_extractor import MailWorker
 from supabase import create_client
 
 logger = logging.getLogger("orchestrator.browser")
@@ -30,18 +30,16 @@ class AutomationRunner:
             )
 
     async def _sign_out_everywhere(self, page):
-        """تسجيل خروج كامل من الجلسات بدون أخطاء محددات"""
         try:
             logger.info("[LOGOUT] Opening authorized devices to sign out everywhere...")
-            await page.goto("https://store.steampowered.com/account/authorizeddevices", wait_until="domcontentloaded", timeout=20000)
-            await page.wait_for_timeout(2000)
+            await page.goto("https://store.steampowered.com/account/authorizeddevices", wait_until="domcontentloaded", timeout=15000)
+            await page.wait_for_timeout(1500)
 
-            # استخدام محدد CSS صريح بدون خلط XPath
             sign_out_btn = await page.wait_for_selector("button.btn_red_white_text, button:has-text('Sign out everywhere')", timeout=8000)
             if sign_out_btn:
                 await sign_out_btn.click(force=True)
-                logger.info("[LOGOUT] Clicked primary sign out button. Confirming modal dialog...")
-                await page.wait_for_timeout(1500)
+                logger.info("[LOGOUT] Clicked primary button. Confirming modal...")
+                await page.wait_for_timeout(1200)
 
                 confirm_modal_btn = await page.wait_for_selector(
                     ".newmodal button:has-text('Sign out everywhere'), .modal_frame button:has-text('Sign out'), .btn_medium.btn_green_steamui, .DialogButton._Primary",
@@ -49,11 +47,37 @@ class AutomationRunner:
                 )
                 if confirm_modal_btn:
                     await confirm_modal_btn.click(force=True)
-                    logger.info("[LOGOUT:SUCCESS] Confirmed modal. All active web and client sessions destroyed.")
-                
-                await page.wait_for_timeout(2000)
+                    logger.info("[LOGOUT:SUCCESS] Sessions cleared successfully.")
+                await page.wait_for_timeout(1500)
         except Exception as e:
             logger.warning(f"[LOGOUT:WARN] Could not finish sign out everywhere: {str(e)}")
+
+    async def _steam_login_and_request(self, page, steam_user, steam_pass):
+        """خطوات فتح ستيم والدخول وطلب الكود"""
+        logger.info("Opening Steam Change Email page...")
+        await page.goto("https://help.steampowered.com/en/wizard/HelpChangeEmail/", wait_until="domcontentloaded", timeout=35000)
+
+        if "login" in page.url.lower():
+            logger.info(f"Steam login requested for: {steam_user}")
+            user_selector = "input#input_username, input[name='username'], input[type='text']:not([readonly])"
+            await page.wait_for_selector(user_selector, timeout=15000)
+            await page.fill(user_selector, steam_user)
+
+            pwd_selector = "input#input_password, input[name='password'], input[type='password']:not([readonly])"
+            await page.wait_for_selector(pwd_selector, timeout=10000)
+            await page.fill(pwd_selector, steam_pass)
+            await page.keyboard.press("Enter")
+
+            await page.wait_for_timeout(2500)
+
+        # طلب إرسال الكود
+        target_button = await page.wait_for_selector(
+            "xpath=//a[contains(., 'Email an account verification code')] | //button[contains(., 'Email an account verification code')]",
+            timeout=15000
+        )
+        if target_button:
+            await target_button.click(force=True)
+            logger.info("[STEAM:SUCCESS] Requested code dispatch to original email.")
 
     async def execute_task(self, target_dashboard_url: str, task_payload: dict) -> dict:
         await self.initialize()
@@ -70,48 +94,24 @@ class AutomationRunner:
         email_pass = task_payload.get("email_password")
         new_email = task_payload.get("target_contact")
 
+        mail_worker = MailWorker(context, orig_email, email_pass)
+
         try:
-            logger.info("Opening Steam Help Change Email page directly...")
-            await page.goto("https://help.steampowered.com/en/wizard/HelpChangeEmail/", wait_until="domcontentloaded", timeout=35000)
-
-            if "login" in page.url.lower():
-                logger.info(f"Steam login requested for: {steam_user}")
-                user_selector = "input#input_username, input[name='username'], input[type='text']:not([readonly])"
-                await page.wait_for_selector(user_selector, timeout=15000)
-                await page.fill(user_selector, steam_user)
-
-                pwd_selector = "input#input_password, input[name='password'], input[type='password']:not([readonly])"
-                await page.wait_for_selector(pwd_selector, timeout=10000)
-                await page.fill(pwd_selector, steam_pass)
-                await page.keyboard.press("Enter")
-
-                await page.wait_for_timeout(3000)
-
-            # طلب إرسال الكود
-            target_button = await page.wait_for_selector(
-                "xpath=//a[contains(., 'Email an account verification code')] | //button[contains(., 'Email an account verification code')]",
-                timeout=15000
+            # 1. التشغيل المتوازي: تسجيل الدخول لستيم + فتح الإيميل بنفس اللحظة
+            logger.info("[PARALLEL:START] Starting Steam navigation & Mail pre-login simultaneously...")
+            await asyncio.gather(
+                self._steam_login_and_request(page, steam_user, steam_pass),
+                mail_worker.pre_login()
             )
-            if target_button:
-                await target_button.click(force=True)
-                logger.info("[STEAM:SUCCESS] Requested code dispatch to original email.")
 
-            await page.wait_for_timeout(3000)
-
-            # استخراج الكود باستخدام الدالة المرنة (xomail أو outlook)
-            logger.info(f"Fetching code for email: {orig_email}")
-            change_email_code = await fetch_steam_code(
-                context=context,
-                email=orig_email,
-                password=email_pass,
-                timeout_seconds=45
-            )
+            # 2. سحب الكود اللحظي (لأن الإيميل صار مفتوح وجاهز مسبقاً)
+            change_email_code = await mail_worker.fetch_code(timeout_seconds=35)
             logger.info(f"[STEAM_VERIFICATION_CODE]: {change_email_code}")
 
             await page.wait_for_load_state("domcontentloaded")
-            await page.wait_for_timeout(1500)
+            await page.wait_for_timeout(1000)
 
-            # إدخال الكود الأول بصفحة ستيم
+            # 3. إدخال كود التحقق الأول
             code_selectors = [
                 "input#email_reset_code",
                 "input[name='code']",
@@ -136,9 +136,9 @@ class AutomationRunner:
             if not code_input_filled:
                 raise TimeoutError("Could not locate code input field.")
 
-            await page.wait_for_timeout(2500)
+            await page.wait_for_timeout(2000)
 
-            # إدخال الإيميل الجديد
+            # 4. إدخال الإيميل الجديد
             logger.info(f"Entering target new email: {new_email}")
             new_email_selector = "input#email_input, input#email, input[name='new_email'], input[type='text']:not([readonly]):visible"
             new_email_input = await page.wait_for_selector(new_email_selector, timeout=20000)
@@ -154,9 +154,9 @@ class AutomationRunner:
                 except Exception:
                     pass
 
-            await page.wait_for_timeout(3000)
+            await page.wait_for_timeout(2500)
 
-            # انتظار الكود من الواجهة (مهلة 15 دقيقة)
+            # 5. انتظار كود الواجهة (15 دقيقة)
             if self.supabase and account_id:
                 logger.info(f"[WAITING] Waiting for user input from UI (Timeout: 15 minutes) for account {account_id}...")
                 self.supabase.table("stock_accounts").update({
@@ -176,7 +176,7 @@ class AutomationRunner:
                     logger.warning("[TIMEOUT] 15 minutes exceeded without user input. Cancelling task.")
                     raise TimeoutError("User did not submit verification code within 15 minutes.")
 
-                logger.info(f"[RECEIVED] User code received: {user_code}. Submitting to Steam...")
+                logger.info(f"[RECEIVED] Submitting user target code: {user_code}")
                 final_input_selector = "input#email_reset_code, input#code, input[name='code'], input[type='text']:not([readonly]):visible"
                 final_input = await page.wait_for_selector(final_input_selector, timeout=15000)
                 await final_input.click(force=True)
@@ -190,9 +190,9 @@ class AutomationRunner:
                     except Exception:
                         pass
 
-                await page.wait_for_timeout(3000)
+                await page.wait_for_timeout(2500)
 
-            # تسجيل الخروج الشامل
+            # 6. تسجيل الخروج الشامل
             await self._sign_out_everywhere(page)
 
             logger.info("Process finished successfully! Steam email updated & sessions cleared.")
@@ -206,6 +206,7 @@ class AutomationRunner:
                 pass
             raise e
         finally:
+            await mail_worker.close()
             await context.close()
 
     async def close(self):
