@@ -1,6 +1,6 @@
 """
-browser_engine.py - Complete Clean Engine Rebuild
-Robust Playwright Automation & Smart Webmail Extraction Architecture.
+browser_engine.py - Production Ready Engine
+Mapped precisely to Supabase schema keys: original_email, steam_username, email_password.
 """
 
 import re
@@ -29,9 +29,6 @@ STEALTH_ARGS = [
     "--disable-extensions",
 ]
 
-# ==============================================================================
-# 1. IMAP & WEBMAIL CODE EXTRACTORS
-# ==============================================================================
 def _fetch_code_via_imap_sync(email_addr: str, email_pass: str, timeout: int = 10) -> Optional[str]:
     if not email_addr or email_addr == "None":
         return None
@@ -95,7 +92,6 @@ async def fetch_code_via_browser(page: Page, email_addr: str, email_pass: str) -
     return None
 
 async def get_steam_code(page: Page, email_addr: str, email_pass: str) -> Optional[str]:
-    # Direct IMAP Check
     code = await asyncio.to_thread(_fetch_code_via_imap_sync, email_addr, email_pass, 10)
     if code and code != "AUTH_DISABLED":
         return code
@@ -103,9 +99,6 @@ async def get_steam_code(page: Page, email_addr: str, email_pass: str) -> Option
     logger.warning("[SMART-DISPATCHER] IMAP restricted by Microsoft. Switching to Playwright Webmail...")
     return await fetch_code_via_browser(page, email_addr, email_pass)
 
-# ==============================================================================
-# 2. AUTOMATION RUNNER CLASS
-# ==============================================================================
 class AutomationRunner:
     def __init__(self, proxy_url: Optional[str] = None):
         self.playwright = None
@@ -138,28 +131,25 @@ class AutomationRunner:
             if isinstance(arg, dict): payload.update(arg)
         if kwargs: payload.update(kwargs)
 
-        # Smart Field Extractor across all possible Supabase column names
-        steam_user = payload.get("username") or payload.get("steam_username") or payload.get("account_name")
-        steam_pass = payload.get("password") or payload.get("steam_password")
+        # Mapped specifically to Supabase Schema
+        steam_user = payload.get("steam_username") or payload.get("username")
+        steam_pass = payload.get("steam_password") or payload.get("password")
         
         email_addr = (
+            payload.get("original_email") or 
             payload.get("email") or 
-            payload.get("current_email") or 
-            payload.get("outlook_email") or 
-            payload.get("mail")
+            payload.get("current_email")
         )
         email_pass = (
             payload.get("email_password") or 
-            payload.get("current_email_password") or 
-            payload.get("outlook_password") or 
-            payload.get("mail_password")
+            payload.get("current_email_password")
         )
         target_email = payload.get("target_email") or payload.get("new_email")
 
-        logger.info(f"[TASK-DATA] Username: {steam_user} | Email: {email_addr} | Target: {target_email}")
+        logger.info(f"[TASK-DATA] Username: {steam_user} | Original Email: {email_addr} | Target: {target_email}")
 
-        if not email_addr or email_addr == "None":
-            raise ValueError(f"ERR_MISSING_EMAIL: Email data is empty in Supabase payload. Received keys: {list(payload.keys())}")
+        if not email_addr or str(email_addr).strip() == "None":
+            raise ValueError(f"ERR_MISSING_EMAIL: Email data is empty in payload. Received keys: {list(payload.keys())}")
 
         page = await self.context.new_page()
         try:
