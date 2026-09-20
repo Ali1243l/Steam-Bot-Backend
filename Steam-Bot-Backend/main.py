@@ -1,83 +1,113 @@
+"""
+main.py - FastAPI Application Server & Task Dispatcher
+Full Supabase synchronization & payload validation pipeline.
+"""
+
 import os
 import logging
+import httpx
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, BackgroundTasks, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
-from typing import Optional
-from supabase import create_client
+from typing import Optional, Dict, Any
 
 from browser_engine import AutomationRunner
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-logger = logging.getLogger("orchestrator.main")
+logger = logging.getLogger("main")
 
-SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
-SUPABASE_KEY = os.getenv("SUPABASE_KEY", os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")).strip()
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
+SUPABASE_URL = os.getenv("SUPABASE_URL", "https://mgddwvkgswdahragsazv.supabase.co")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", os.getenv("SUPABASE_ANON_KEY", ""))
 
 runner = AutomationRunner()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # تشغيل المتصفح فور إقلاع السيرفر ليكون Warm وجاهز فوراً
-    logger.info("[STARTUP] Initializing Warm Browser Instance...")
     await runner.initialize()
     yield
-    # إغلاق المتصفح عند إيقاف السيرفر
-    logger.info("[SHUTDOWN] Closing Browser Instance...")
-    await runner.close()
+    await runner.cleanup()
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(title="Steam Automation API", lifespan=lifespan)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+class TaskRequest(BaseModel):
+    target_email: Optional[str] = None
 
-class TaskPayload(BaseModel):
-    account_id: Optional[str] = None
-    target_contact: Optional[str] = "abutrabali4@gmail.com"
-
-async def background_pipeline(account_id: str, new_email: str):
-    try:
-        res = supabase.table("stock_accounts").select("*").eq("id", account_id).execute()
-        if not res.data:
-            logger.error(f"[PIPELINE:ERROR] Account {account_id} not found.")
+async def process_account_task(record_id: str, target_email: Optional[str] = None):
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "return=representation"
+    }
+    
+    async with httpx.AsyncClient() as client:
+        # 1. Fetch full record details from Supabase
+        res = await client.get(f"{SUPABASE_URL}/rest/v1/stock_accounts?id=eq.{record_id}", headers=headers)
+        if res.status_code != 200 or not res.json():
+            logger.error(f"Failed to fetch record {record_id} from Supabase")
             return
 
-        acc = res.data[0]
-        supabase.table("stock_accounts").update({"status": "reserved"}).eq("id", account_id).execute()
+        record = res.json()[0]
+        logger.info(f"[SUPABASE-RECORD-FETCHED] Keys available in table: {list(record.keys())}")
+        
+        # Merge target_email into payload
+        if target_email:
+            record["target_email"] = target_email
 
-        payload = {
-            "account_id": acc["id"],
-            "account_identifier": acc.get("steam_username"),
-            "account_secret": acc.get("steam_password"),
-            "original_email": acc.get("original_email"),
-            "email_password": acc.get("email_password"),
-            "target_contact": new_email
-        }
+        # 2. Update status to 'processing'
+        await client.patch(
+            f"{SUPABASE_URL}/rest/v1/stock_accounts?id=eq.{record_id}",
+            json={"status": "processing"},
+            headers=headers
+        )
 
-        await runner.execute_task("", payload)
-        supabase.table("stock_accounts").update({"status": "used"}).eq("id", account_id).execute()
+        try:
+            # 3. Execute Automation Task
+            result = await runner.execute_task(record)
+            
+            # 4. Mark completed in Supabase
+            await client.patch(
+                f"{SUPABASE_URL}/rest/v1/stock_accounts?id=eq.{record_id}",
+                json={"status": "completed", "notes": f"Code: {result.get('code')}"},
+                headers=headers
+            )
+            logger.info(f"[TASK-SUCCESS] Record {record_id} completed successfully.")
+        except Exception as e:
+            logger.error(f"[TASK-FAILED] Record {record_id} failed: {e}")
+            await client.patch(
+                f"{SUPABASE_URL}/rest/v1/stock_accounts?id=eq.{record_id}",
+                json={"status": "failed", "notes": str(e)},
+                headers=headers
+            )
 
-    except Exception as e:
-        logger.error(f"[PIPELINE:ERROR] Task failed for record {account_id}: {str(e)}")
-        if supabase:
-            supabase.table("stock_accounts").update({"status": "available"}).eq("id", account_id).execute()
+@app.get("/")
+def read_root():
+    return {"status": "online", "service": "Steam Automation Engine"}
+
+@app.get("/openapi.json")
+def get_openapi():
+    return app.openapi()
 
 @app.post("/api/process-task")
-async def process_task(payload: TaskPayload, bg_tasks: BackgroundTasks):
-    account_id = payload.account_id
-    if not account_id:
-        res = supabase.table("stock_accounts").select("id").eq("status", "available").order("created_at").limit(1).execute()
-        if not res.data:
-            logger.warning("[DISPATCH] No available accounts found in Supabase stock_accounts table.")
-            raise HTTPException(status_code=404, detail="No available accounts found")
-        account_id = res.data[0]["id"]
+async def trigger_task(background_tasks: BackgroundTasks, payload: Optional[Dict[str, Any]] = None):
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    async with httpx.AsyncClient() as client:
+        # Fetch available account
+        res = await client.get(
+            f"{SUPABASE_URL}/rest/v1/stock_accounts?status=eq.available&order=created_at.asc&limit=1",
+            headers=headers
+        )
+        data = res.json()
+        if not data:
+            raise HTTPException(status_code=444, detail="No available accounts found")
 
-    bg_tasks.add_task(background_pipeline, account_id, payload.target_contact)
-    return {"status": "accepted", "account_id": account_id}
+        record_id = data[0]["id"]
+        target_email = payload.get("target_email") if payload else None
+        
+        background_tasks.add_task(process_account_task, record_id, target_email)
+        return {"status": "queued", "record_id": record_id}
