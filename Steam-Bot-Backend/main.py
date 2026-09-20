@@ -1,6 +1,6 @@
 """
 main.py - FastAPI Application Server & Task Dispatcher
-Full Supabase synchronization & payload validation pipeline.
+Full Supabase synchronization & robust headers handling.
 """
 
 import os
@@ -17,7 +17,22 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("main")
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://mgddwvkgswdahragsazv.supabase.co")
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", os.getenv("SUPABASE_ANON_KEY", ""))
+SUPABASE_KEY = (
+    os.getenv("SUPABASE_SERVICE_ROLE_KEY") or 
+    os.getenv("SUPABASE_ANON_KEY") or 
+    os.getenv("SUPABASE_KEY") or 
+    ""
+).strip()
+
+def get_supabase_headers() -> Dict[str, str]:
+    headers = {
+        "Content-Type": "application/json",
+        "Prefer": "return=representation"
+    }
+    if SUPABASE_KEY:
+        headers["apikey"] = SUPABASE_KEY
+        headers["Authorization"] = f"Bearer {SUPABASE_KEY}"
+    return headers
 
 runner = AutomationRunner()
 
@@ -29,28 +44,19 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Steam Automation API", lifespan=lifespan)
 
-class TaskRequest(BaseModel):
-    target_email: Optional[str] = None
-
 async def process_account_task(record_id: str, target_email: Optional[str] = None):
-    headers = {
-        "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}",
-        "Content-Type": "application/json",
-        "Prefer": "return=representation"
-    }
+    headers = get_supabase_headers()
     
     async with httpx.AsyncClient() as client:
         # 1. Fetch full record details from Supabase
         res = await client.get(f"{SUPABASE_URL}/rest/v1/stock_accounts?id=eq.{record_id}", headers=headers)
         if res.status_code != 200 or not res.json():
-            logger.error(f"Failed to fetch record {record_id} from Supabase")
+            logger.error(f"Failed to fetch record {record_id} from Supabase. Status: {res.status_code}")
             return
 
         record = res.json()[0]
-        logger.info(f"[SUPABASE-RECORD-FETCHED] Keys available in table: {list(record.keys())}")
+        logger.info(f"[SUPABASE-RECORD-FETCHED] Record ID: {record_id} | Keys: {list(record.keys())}")
         
-        # Merge target_email into payload
         if target_email:
             record["target_email"] = target_email
 
@@ -90,11 +96,7 @@ def get_openapi():
 
 @app.post("/api/process-task")
 async def trigger_task(background_tasks: BackgroundTasks, payload: Optional[Dict[str, Any]] = None):
-    headers = {
-        "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}",
-        "Content-Type": "application/json"
-    }
+    headers = get_supabase_headers()
     
     async with httpx.AsyncClient() as client:
         # Fetch available account
@@ -102,6 +104,10 @@ async def trigger_task(background_tasks: BackgroundTasks, payload: Optional[Dict
             f"{SUPABASE_URL}/rest/v1/stock_accounts?status=eq.available&order=created_at.asc&limit=1",
             headers=headers
         )
+        if res.status_code != 200:
+            logger.error(f"Supabase request failed with status {res.status_code}: {res.text}")
+            raise HTTPException(status_code=500, detail=f"Supabase connection error: {res.status_code}")
+            
         data = res.json()
         if not data:
             raise HTTPException(status_code=444, detail="No available accounts found")
