@@ -162,12 +162,15 @@ async def process_task(payload: ProcessTaskRequest, background_tasks: Background
     logger.info(f"[DISPATCH] Assigning record {record_id} ({target_record.get('steam_username')})")
 
     # Queue execution pipeline without blocking the HTTP client
-    background_tasks.add_task(
-        execute_task_pipeline,
-        record_id=record_id,
-        account_data=target_record,
-        target_contact=payload.target_contact,
-        sender_filter=payload.sender_filter,
+    # Fetch account based on user selection or fallback to FIFO
+        query = supabase.table("stock_accounts").select("id, steam_username, steam_password, original_email, email_password, status").eq("status", "available")
+        
+        if payload.account_id:
+            logger.info(f"[DISPATCH] Specific account requested: {payload.account_id}")
+            query_result = query.eq("id", payload.account_id).execute()
+        else:
+            logger.info("[DISPATCH] No specific account requested. Fetching oldest available.")
+            query_result = query.order("created_at", desc=False).limit(1).execute()
     )
 
     return TaskResponse(
