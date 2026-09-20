@@ -1,42 +1,37 @@
-"""
-main.py - Central Automation Orchestrator Service
-Exposes a FastAPI endpoint to process tasks, coordinate Supabase record transitions,
-and link IMAP token parsing with the headless browser runner.
-"""
-
 import os
-import asyncio
 import logging
-from typing import Optional
 from datetime import datetime
-from pydantic import BaseModel, Field
+from typing import Optional
 
-from fastapi import FastAPI, BackgroundTasks, HTTPException, status
+from fastapi import FastAPI, HTTPException, BackgroundTasks, status
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 from supabase import create_client, Client
 
-# Import local modular engines
 from browser_engine import AutomationRunner
-from imap_helper import fetch_verification_code
 
-# Configure structured logging
-logger = logging.getLogger("orchestrator")
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s"
+)
+logger = logging.getLogger("orchestrator.main")
 
-# Load environment variables
+# Supabase Configurations
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")).strip()
-IMAP_HOST = os.getenv("DEFAULT_IMAP_SERVER", "imap.example.com").strip()
-TARGET_DASHBOARD_URL = os.getenv("TARGET_DASHBOARD_URL", "https://example.com/settings").strip()
+TARGET_DASHBOARD_URL = os.getenv("TARGET_DASHBOARD_URL", "https://help.steampowered.com/en/wizard/HelpChangeEmail/").strip()
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     logger.warning("[CONFIG] Supabase credentials not found in environment variables.")
 
+def get_supabase_client() -> Client:
+    return create_client(SUPABASE_URL, SUPABASE_KEY)
+
 app = FastAPI(
     title="Automation Integration Bridge",
     version="1.0.0",
-    description="Asynchronous orchestrator for database-driven browser tasks.",
+    description="Asynchronous orchestrator for database-driven browser tasks."
 )
-from fastapi.middleware.cors import CORSMiddleware
 
 app.add_middleware(
     CORSMiddleware,
@@ -46,17 +41,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-# Request and Response Schemas
+# Schemas
 class ProcessTaskRequest(BaseModel):
-    target_contact: str = Field(..., description="The contact/email string to update via automation")
+    target_contact: str = Field(..., description="The target email to set on Steam")
     order_reference: Optional[str] = Field(None, description="Optional external order identifier")
     sender_filter: Optional[str] = Field(
         default="noreply@example.com",
-        description="Filter incoming email sender for verification extraction"
+        description="Filter incoming email sender"
     )
-    account_id: Optional[str] = Field(None, description="Specific account ID to use. If null, picks oldest available.")
-
+    account_id: Optional[str] = Field(
+        None,
+        description="Specific account ID to target. If omitted, FIFO selection is used."
+    )
 
 class TaskResponse(BaseModel):
     status: str
@@ -65,14 +61,7 @@ class TaskResponse(BaseModel):
     order_reference: Optional[str] = None
     dispatched_at: str
 
-
-def get_supabase_client() -> Client:
-    """Initializes and returns a Supabase database client."""
-    if not SUPABASE_URL or not SUPABASE_KEY:
-        raise RuntimeError("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY.")
-    return create_client(SUPABASE_URL, SUPABASE_KEY)
-
-
+# Background Automation Pipeline
 async def execute_task_pipeline(
     record_id: str,
     account_data: dict,
@@ -83,15 +72,15 @@ async def execute_task_pipeline(
     logger.info(f"[PIPELINE:START] Beginning pipeline for record ID: {record_id}")
 
     try:
-        # Step 1: تحديث حالة الحساب إلى قيد المعالجة (محجوز)
+        # 1. حجز الحساب أثناء المعالجة
         supabase.table("stock_accounts").update({
             "status": "reserved",
             "updated_at": datetime.utcnow().isoformat()
         }).eq("id", record_id).execute()
 
         runner = AutomationRunner()
-        
         task_payload = {
+            "account_id": record_id,
             "account_identifier": account_data.get("steam_username"),
             "account_secret": account_data.get("steam_password"),
             "original_email": account_data.get("original_email"),
@@ -99,10 +88,10 @@ async def execute_task_pipeline(
             "target_contact": target_contact
         }
 
-        # Step 2: تشغيل المتصفح لتنفيذ الدخول واستخراج الكود وتغيير الإيميل
+        # 2. تشغيل الأتمتة بالمتصفح
         await runner.execute_task(TARGET_DASHBOARD_URL, task_payload)
 
-        # Step 3: تحديث الحساب إلى مستخدم بعد النجاح
+        # 3. اكتمال العملية بنجاح
         logger.info(f"[PIPELINE:COMPLETE] Successfully processed task. Marking record {record_id} as 'used'.")
         supabase.table("stock_accounts").update({
             "status": "used",
@@ -118,29 +107,28 @@ async def execute_task_pipeline(
                 "updated_at": datetime.utcnow().isoformat()
             }).eq("id", record_id).execute()
         except Exception as update_err:
-            logger.error(f"[SUPABASE:FAIL] Could not set error status: {update_err}")
+            logger.error(f"[SUPABASE:FAIL] Could not reset account status: {update_err}")
     finally:
         if 'runner' in locals():
             await runner.close()
 
-
+# API Endpoints
 @app.post("/api/process-task", response_model=TaskResponse, status_code=status.HTTP_202_ACCEPTED)
 async def process_task(payload: ProcessTaskRequest, background_tasks: BackgroundTasks):
     try:
         supabase = get_supabase_client()
-        
-        # 1. بناء الاستعلام حسب اختيار الحساب
+
         query = supabase.table("stock_accounts").select(
             "id, steam_username, steam_password, original_email, email_password, status"
         ).eq("status", "available")
-        
+
         if payload.account_id:
             logger.info(f"[DISPATCH] Specific account requested: {payload.account_id}")
             query_result = query.eq("id", payload.account_id).execute()
         else:
             logger.info("[DISPATCH] No specific account requested. Fetching oldest available.")
             query_result = query.order("created_at", desc=False).limit(1).execute()
-            
+
         records = query_result.data
         if not records:
             logger.warning("[DISPATCH] No available accounts found in Supabase stock_accounts table.")
@@ -153,7 +141,6 @@ async def process_task(payload: ProcessTaskRequest, background_tasks: Background
         record_id = target_record["id"]
         logger.info(f"[DISPATCH] Assigning record {record_id} ({target_record.get('steam_username')})")
 
-        # 2. تشغيل المهمة بالخلفية بدون تعطيل الرد للفرونت إند
         background_tasks.add_task(
             execute_task_pipeline,
             record_id=record_id,
@@ -173,18 +160,16 @@ async def process_task(payload: ProcessTaskRequest, background_tasks: Background
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"[DISPATCH:FAIL] Database configuration error: {str(e)}")
+        logger.error(f"[DISPATCH:FAIL] Database error: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Database configuration error: {str(e)}"
         )
+
 @app.get("/healthz", tags=["Monitoring"])
 async def health_check():
-    """Simple health check endpoint for VPS uptime monitors or load balancers."""
     return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
-
 
 if __name__ == "__main__":
     import uvicorn
-    # Bind to 0.0.0.0 for VPS / Docker container routing
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)
