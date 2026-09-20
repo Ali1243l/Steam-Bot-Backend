@@ -84,7 +84,7 @@ async def execute_task_pipeline(
     try:
         # Step 1: تحديث حالة الحساب إلى قيد المعالجة (محجوز)
         supabase.table("stock_accounts").update({
-            "status": "processing",
+            "status": "reserved",
             "updated_at": datetime.utcnow().isoformat()
         }).eq("id", record_id).execute()
 
