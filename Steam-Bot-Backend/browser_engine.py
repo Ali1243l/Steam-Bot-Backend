@@ -1,10 +1,12 @@
 """
-browser_engine.py - Smart Multi-Provider Anti-Bot Engine for AWS
-Dynamically routes verification requests based on Email Domain (@outlook.com, @hotmail.com, @fjqtabk.icu, etc.)
+browser_engine.py - Hybrid IMAP & Stealth Playwright Automation Engine
 """
 
 import re
 import os
+import imaplib
+import email
+from email.header import decode_header
 import asyncio
 import logging
 from typing import Dict, Any, Optional
@@ -13,6 +15,7 @@ from playwright.async_api import async_playwright, BrowserContext, Page, Timeout
 logger = logging.getLogger("browser_engine")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
+# Chromium flags optimized for headless container environments
 STEALTH_ARGS = [
     "--no-sandbox",
     "--disable-setuid-sandbox",
@@ -27,142 +30,173 @@ STEALTH_ARGS = [
 ]
 
 
-def detect_email_provider(email: str) -> str:
-    """الخوارزمية الذكية: فحص دومين الإيميل وتحديد المزود تلقائياً"""
-    if not email or "@" not in email:
-        return "xomail"
-    domain = email.split("@")[-1].lower().strip()
-    microsoft_domains = ["outlook.com", "hotmail.com", "live.com", "msn.com", "passport.com"]
-    if any(domain.endswith(d) for d in microsoft_domains):
-        return "outlook"
-    return "xomail"
+# ============================================================================
+# METHOD 1: Direct Python IMAP Extraction (Primary)
+# ============================================================================
+def fetch_code_via_imap(email_address: str, password: str, timeout_seconds: int = 45) -> Optional[str]:
+    """
+    Connects directly to outlook.office365.com via IMAP over SSL (Port 993),
+    searches recent inbox messages, and extracts the 5-character Steam verification code.
+    """
+    logger.info(f"[IMAP-ENGINE] Attempting direct IMAP connection to outlook.office365.com for: {email_address}")
+    start_time = asyncio.get_event_loop().time()
+
+    # Determine IMAP server host based on domain
+    domain = email_address.split("@")[-1].lower() if "@" in email_address else ""
+    if any(domain.endswith(d) for d in ["outlook.com", "hotmail.com", "live.com", "msn.com"]):
+        imap_host = "outlook.office365.com"
+    else:
+        # Fallback host if custom domain
+        imap_host = "outlook.office365.com"
+
+    try:
+        mail = imaplib.IMAP4_SSL(imap_host, 993)
+        mail.login(email_address, password)
+        logger.info("[IMAP-ENGINE] IMAP Authentication successful.")
+
+        while (asyncio.get_event_loop().time() - start_time) < timeout_seconds:
+            mail.select("INBOX")
+            
+            # Search for unseen messages or all recent messages
+            status, messages = mail.search(None, "UNSEEN")
+            mail_ids = messages[0].split()
+            
+            if not mail_ids:
+                # If no unseen messages, search all recent messages
+                status, messages = mail.search(None, "ALL")
+                mail_ids = messages[0].split()
+
+            # Inspect the latest messages (reverse order)
+            for msg_id in reversed(mail_ids[-5:]):
+                status, msg_data = mail.fetch(msg_id, "(RFC822)")
+                for response_part in msg_data:
+                    if isinstance(response_part, tuple):
+                        msg = email.message_from_bytes(response_part[1])
+                        
+                        # Extract email body
+                        body = ""
+                        if msg.is_multipart():
+                            for part in msg.walk():
+                                content_type = part.get_content_type()
+                                content_disposition = str(part.get("Content-Disposition"))
+                                if content_type in ["text/plain", "text/html"] and "attachment" not in content_disposition:
+                                    payload = part.get_payload(decode=True)
+                                    if payload:
+                                        body += payload.decode(errors="ignore")
+                        else:
+                            payload = msg.get_payload(decode=True)
+                            if payload:
+                                body = payload.decode(errors="ignore")
+
+                        # Parse 5-character alphanumeric verification code
+                        match = re.search(r'\b[A-Z0-9]{5}\b', body)
+                        if match:
+                            code = match.group(0)
+                            logger.info(f"[IMAP-ENGINE] Verification code successfully retrieved via IMAP: {code}")
+                            mail.logout()
+                            return code
+
+            asyncio.run(asyncio.sleep(3))
+
+        mail.logout()
+        logger.warning("[IMAP-ENGINE] Polling timeout reached without finding verification code.")
+        return None
+
+    except Exception as err:
+        logger.warning(f"[IMAP-ENGINE] Direct IMAP connection failed: {str(err)}. Will trigger browser fallback.")
+        return None
 
 
-async def fetch_code_from_outlook(context: BrowserContext, email: str, password: str, timeout_seconds: int = 60) -> str:
-    """محرك مخصص لتسجيل الدخول إلى Outlook و Hotmail واستخراج الرمز"""
-    logger.info(f"[OUTLOOK-ENGINE] Opening tab for Microsoft Outlook login: {email}")
+# ============================================================================
+# METHOD 2: Multi-Step Browser Extraction (Fallback)
+# ============================================================================
+async def fetch_code_via_browser_fallback(context: BrowserContext, email_address: str, password: str, timeout_seconds: int = 60) -> str:
+    """
+    Fallback browser automation for Microsoft login with explicit multi-step transition handling.
+    """
+    logger.info(f"[BROWSER-FALLBACK] Navigating to Microsoft Live login for: {email_address}")
     page = await context.new_page()
 
     try:
-        # 1. فتح صفحة تسجيل الدخول لـ Microsoft Outlook
         await page.goto("https://login.live.com/", wait_until="domcontentloaded", timeout=30000)
         await page.wait_for_timeout(2000)
 
-        # كتابة ايميل Outlook
+        # Step 1: Input Email
         email_input = await page.wait_for_selector('input[type="email"], input[name="loginfmt"]', timeout=20000)
-        await email_input.fill(email)
-        
-        next_btn = await page.query_selector('input[type="submit"], #idSIButton9')
-        if next_btn:
-            await next_btn.click()
-            await page.wait_for_timeout(2500)
+        await email_input.fill(email_address)
 
-        # كتابة الباسورد
-        pass_input = await page.wait_for_selector('input[type="password"], input[name="passwd"]', timeout=20000)
+        # Click Next
+        next_btn = await page.wait_for_selector('input[type="submit"], #idSIButton9', timeout=10000)
+        await next_btn.click()
+        logger.info("[BROWSER-FALLBACK] Submitted username. Waiting for password field to become visible...")
+
+        # Step 2: Explicitly wait for Password Field to become visible (Multi-Step Transition)
+        pass_input = await page.wait_for_selector(
+            'input[type="password"]:visible, input[name="passwd"]:visible, #i0116:visible', 
+            state="visible", 
+            timeout=25000
+        )
         await pass_input.fill(password)
 
-        signin_btn = await page.query_selector('input[type="submit"], #idSIButton9, button[type="submit"]')
-        if signin_btn:
-            await signin_btn.click()
-            await page.wait_for_timeout(3000)
+        # Click Sign In
+        signin_btn = await page.wait_for_selector('input[type="submit"], #idSIButton9', timeout=10000)
+        await signin_btn.click()
+        await page.wait_for_timeout(3000)
 
-        # تخطي سؤال الإبقاء على تسجيل الدخول Stay signed in
-        stay_signed_btn = await page.query_selector('#idSIButton9, input[value="Yes"], button:has-text("Yes"), #idBtn_Back')
+        # Handle "Stay Signed In?" Prompt if present
+        stay_signed_btn = await page.query_selector('#idSIButton9, input[value="Yes"], #idBtn_Back')
         if stay_signed_btn:
             await stay_signed_btn.click()
             await page.wait_for_timeout(3000)
 
-        # 2. الانتقال لصندوق الوارد لـ Outlook
+        # Navigate to Outlook Inbox
         await page.goto("https://outlook.live.com/mail/0/inbox", wait_until="domcontentloaded", timeout=30000)
-        logger.info("[OUTLOOK-ENGINE] Polling Outlook inbox for verification code...")
+        logger.info("[BROWSER-FALLBACK] Polling Outlook DOM for code...")
 
         start_time = asyncio.get_event_loop().time()
         while (asyncio.get_event_loop().time() - start_time) < timeout_seconds:
             page_text = await page.content()
-            
-            # البحث عن رمز مكون من 5 خانات
             match = re.search(r'\b[A-Z0-9]{5}\b', page_text)
             if match:
                 code = match.group(0)
-                logger.info(f"[OUTLOOK-ENGINE] Code successfully extracted: {code}")
+                logger.info(f"[BROWSER-FALLBACK] Code retrieved from Outlook DOM: {code}")
                 return code
 
-            # فتح أول رسالة إيميل في القائمة
-            messages = await page.query_selector_all('div[role="option"], div[data-convid], div.customGroupHeader')
+            messages = await page.query_selector_all('div[role="option"], div[data-convid]')
             if messages:
                 await messages[0].click()
                 await page.wait_for_timeout(2000)
 
             await asyncio.sleep(4)
 
-        raise TimeoutError(f"Outlook verification email timeout after {timeout_seconds}s")
+        raise TimeoutError("Browser fallback timed out before retrieving code.")
 
     finally:
         await page.close()
 
 
-async def fetch_code_from_xomail(context: BrowserContext, email: str, password: str, timeout_seconds: int = 60) -> str:
-    """محرك مخصص لتسجيل الدخول إلى Roundcube Webmail (xomail.club)"""
-    logger.info(f"[XOMAIL-ENGINE] Opening secondary tab for Roundcube: {email}")
-    webmail_page = await context.new_page()
+# ============================================================================
+# SMART DISPATCHER
+# ============================================================================
+async def smart_get_verification_code(context: BrowserContext, email_address: str, password: str, timeout_seconds: int = 60) -> str:
+    """
+    Attempts direct IMAP retrieval first. If IMAP fails or is unavailable, 
+    falls back to multi-step browser automation.
+    """
+    # 1. Primary Attempt: Direct IMAP
+    loop = asyncio.get_running_loop()
+    code = await loop.run_in_executor(None, fetch_code_via_imap, email_address, password, timeout_seconds)
+    if code:
+        return code
 
-    try:
-        await webmail_page.goto("http://xomail.club/", wait_until="domcontentloaded", timeout=30000)
-
-        await webmail_page.fill("#rcmloginuser", email)
-        await webmail_page.fill("#rcmloginpwd", password)
-        await webmail_page.click("#rcmloginsubmit")
-        await webmail_page.wait_for_load_state("domcontentloaded")
-
-        start_time = asyncio.get_event_loop().time()
-        while (asyncio.get_event_loop().time() - start_time) < timeout_seconds:
-            messages = await webmail_page.query_selector_all("table#messagelist tr.message")
-            if messages:
-                logger.info("[XOMAIL-ENGINE] Found email message in inbox...")
-                await messages[0].click()
-                await webmail_page.wait_for_timeout(2000)
-
-                body_text = ""
-                frame_element = await webmail_page.query_selector("iframe#messagecontframe")
-                if frame_element:
-                    frame = await frame_element.content_frame()
-                    if frame:
-                        await frame.wait_for_load_state("domcontentloaded")
-                        body_text = await frame.content()
-                else:
-                    content_elem = await webmail_page.query_selector("div.message-part")
-                    if content_elem:
-                        body_text = await content_elem.inner_text()
-
-                match = re.search(r'\b[A-Z0-9]{5}\b', body_text)
-                if match:
-                    code = match.group(0)
-                    logger.info(f"[XOMAIL-ENGINE] Code extracted: {code}")
-                    return code
-
-            refresh_btn = await webmail_page.query_selector("a.button.toolbar-button.refresh, #rcmbtn100")
-            if refresh_btn:
-                await refresh_btn.click()
-
-            await asyncio.sleep(3)
-
-        raise TimeoutError(f"xomail verification email timeout after {timeout_seconds}s")
-
-    finally:
-        await webmail_page.close()
+    # 2. Secondary Attempt: Browser Automation Fallback
+    logger.info("[SMART-DISPATCHER] Direct IMAP failed or timed out. Engaging Browser Fallback Engine...")
+    return await fetch_code_via_browser_fallback(context, email_address, password, timeout_seconds)
 
 
-async def smart_fetch_verification_code(context: BrowserContext, email: str, password: str, timeout_seconds: int = 60) -> str:
-    """الموزع الذكي: يوجه الطلب تلقائياً بناءً على نوع دومين الإيميل"""
-    provider = detect_email_provider(email)
-    logger.info(f"[SMART-ROUTER] Detected email provider '{provider}' for account: {email}")
-
-    if provider == "outlook":
-        return await fetch_code_from_outlook(context, email, password, timeout_seconds)
-    else:
-        return await fetch_code_from_xomail(context, email, password, timeout_seconds)
-
-
+# ============================================================================
+# AUTOMATION RUNNER CLASS
+# ============================================================================
 class AutomationRunner:
     def __init__(self, screenshot_dir: str = "./artifacts/screenshots"):
         self.screenshot_dir = screenshot_dir
@@ -204,7 +238,7 @@ class AutomationRunner:
         email_pass = task_data.get("email_password", "")
         new_email = task_data.get("target_email") or task_data.get("target_contact") or extra_target or ""
 
-        logger.info(f"[STEALTH-RUNNER] Starting Steam automation for user: {steam_user} (Email: {orig_email})")
+        logger.info(f"[STEALTH-RUNNER] Executing workflow for user: {steam_user} (Mail: {orig_email})")
 
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True, args=STEALTH_ARGS)
@@ -213,24 +247,18 @@ class AutomationRunner:
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
                 locale="en-US",
                 timezone_id="Europe/Stockholm",
-                extra_http_headers={
-                    "Accept-Language": "en-US,en;q=0.9",
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-                }
             )
 
             page = await context.new_page()
             await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
             try:
-                logger.info("[STEP 1] Opening Steam login page with Anti-Detect headers...")
+                # 1. Login to Steam
+                logger.info("[STEP 1] Navigating to Steam login...")
                 await page.goto("https://store.steampowered.com/login/", wait_until="domcontentloaded", timeout=30000)
-                await page.wait_for_timeout(3000)
+                await page.wait_for_timeout(2000)
 
-                page_title = await page.title()
-                logger.info(f"[PAGE TITLE]: {page_title}")
-
-                user_input = await page.wait_for_selector('input[type="text"]:visible, input#input_username, input[name="username"]', timeout=25000)
+                user_input = await page.wait_for_selector('input[type="text"]:visible, input#input_username', timeout=25000)
                 await user_input.fill(steam_user)
 
                 pass_input = await page.wait_for_selector('input[type="password"]:visible, input#input_password', timeout=10000)
@@ -239,32 +267,38 @@ class AutomationRunner:
                 submit_btn = await page.query_selector('button[type="submit"]:visible, button:has-text("Sign in")')
                 if submit_btn:
                     await submit_btn.click()
-                    logger.info("[STEP 2] Submitted credentials. Waiting for authentication...")
-                    await page.wait_for_timeout(5000)
+                    logger.info("[STEP 2] Login submitted. Navigating to account settings...")
+                    await page.wait_for_timeout(4000)
 
-                logger.info("[STEP 3] Opening Account Settings...")
+                # 2. Access Account Settings
                 await page.goto("https://store.steampowered.com/account/", wait_until="domcontentloaded", timeout=30000)
-
+                
                 change_email_btn = await page.query_selector('a[href*="changeemail"], button:has-text("Change my email address")')
                 if change_email_btn:
                     await change_email_btn.click()
                     await page.wait_for_timeout(2000)
 
+                # 3. Trigger Verification Code Dispatch
                 send_code_btn = await page.query_selector('button[type="submit"], .btn_blue_steamui')
                 if send_code_btn:
                     await send_code_btn.click()
-                    logger.info("[STEP 4] Requested verification code dispatch.")
+                    logger.info("[STEP 3] Triggered verification code email from Steam.")
                     await page.wait_for_timeout(3000)
 
-                logger.info("[STEP 5] Smart Routing: Fetching code based on Email Provider...")
-                verification_code = await smart_fetch_verification_code(
+                # 4. Fetch Code (IMAP First, Browser Fallback Second)
+                logger.info("[STEP 4] Fetching verification code via IMAP / Smart Dispatcher...")
+                verification_code = await smart_get_verification_code(
                     context=context,
-                    email=orig_email,
+                    email_address=orig_email,
                     password=email_pass,
                     timeout_seconds=60
                 )
 
-                logger.info(f"[STEP 6] Submitting extracted code: {verification_code}")
+                if not verification_code:
+                    raise RuntimeError("Failed to retrieve verification code via both IMAP and Browser Fallback.")
+
+                # 5. Input Code and Update Email
+                logger.info(f"[STEP 5] Submitting code '{verification_code}' to Steam...")
                 code_input = await page.wait_for_selector("input[type='text'], input[name='code'], input#email_authcode", timeout=15000)
                 await code_input.fill(verification_code)
 
@@ -273,6 +307,7 @@ class AutomationRunner:
                     await confirm_code_btn.click()
                     await page.wait_for_timeout(4000)
 
+                logger.info(f"[STEP 6] Entering target email address: {new_email}")
                 new_email_input = await page.wait_for_selector("input#email, input[type='email'], input[name='new_email']", timeout=15000)
                 await new_email_input.fill(new_email)
 
@@ -281,13 +316,13 @@ class AutomationRunner:
                     await final_btn.click()
                     await page.wait_for_timeout(4000)
 
-                logger.info("[SUCCESS] Account automation finished successfully!")
+                logger.info("[SUCCESS] Account email update completed successfully!")
                 return {"status": "success", "message": "Email updated successfully", "code": verification_code}
 
             except Exception as e:
                 screenshot_path = os.path.join(self.screenshot_dir, f"error_{steam_user}.png")
                 await page.screenshot(path=screenshot_path)
-                logger.error(f"[ERROR] Task failed: {str(e)}. Saved error screenshot to {screenshot_path}")
+                logger.error(f"[ERROR] Task failed: {str(e)}. Error screenshot saved to {screenshot_path}")
                 raise e
 
             finally:
