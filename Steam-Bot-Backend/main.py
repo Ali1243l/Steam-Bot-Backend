@@ -1,6 +1,6 @@
 """
 main.py - FastAPI Application Server & Task Dispatcher
-Resolves HTTP 401 Unauthorized by dynamically parsing Supabase Keys from payload/headers/env.
+Full Supabase synchronization adhering strictly to stock_accounts schema.
 """
 
 import os
@@ -58,6 +58,7 @@ async def process_account_task(record_id: str, target_email: Optional[str] = Non
         if target_email:
             record["target_email"] = target_email
 
+        # Update status to processing
         await client.patch(
             f"{DEFAULT_SUPABASE_URL}/rest/v1/stock_accounts?id=eq.{record_id}",
             json={"status": "processing"},
@@ -66,9 +67,14 @@ async def process_account_task(record_id: str, target_email: Optional[str] = Non
 
         try:
             result = await runner.execute_task(record)
+            # Update status to completed and store code in target_verification_code column if present
+            patch_data = {"status": "completed"}
+            if "target_verification_code" in record:
+                patch_data["target_verification_code"] = result.get('code')
+                
             await client.patch(
                 f"{DEFAULT_SUPABASE_URL}/rest/v1/stock_accounts?id=eq.{record_id}",
-                json={"status": "completed", "notes": f"Code: {result.get('code')}"},
+                json=patch_data,
                 headers=headers
             )
             logger.info(f"[TASK-SUCCESS] Record {record_id} completed successfully.")
@@ -76,7 +82,7 @@ async def process_account_task(record_id: str, target_email: Optional[str] = Non
             logger.error(f"[TASK-FAILED] Record {record_id} failed: {e}")
             await client.patch(
                 f"{DEFAULT_SUPABASE_URL}/rest/v1/stock_accounts?id=eq.{record_id}",
-                json={"status": "failed", "notes": str(e)},
+                json={"status": "failed"},
                 headers=headers
             )
 
@@ -92,7 +98,6 @@ def get_openapi():
 async def trigger_task(request: Request, background_tasks: BackgroundTasks, payload: Optional[Dict[str, Any]] = None):
     payload = payload or {}
     
-    # Dynamically resolve Supabase Key from headers, payload, or env
     header_key = request.headers.get("apikey") or request.headers.get("x-supabase-key") or request.headers.get("authorization")
     if header_key and header_key.startswith("Bearer "):
         header_key = header_key.replace("Bearer ", "").strip()
@@ -108,8 +113,8 @@ async def trigger_task(request: Request, background_tasks: BackgroundTasks, payl
         )
         
         if res.status_code == 401:
-            logger.error("[SUPABASE-401] Supabase rejected request: Unauthorized. Check ANON/SERVICE KEY.")
-            raise HTTPException(status_code=401, detail="Supabase connection error: 401 (Missing or Invalid Supabase API Key)")
+            logger.error("[SUPABASE-401] Supabase rejected request: Unauthorized.")
+            raise HTTPException(status_code=401, detail="Supabase connection error: 401")
             
         if res.status_code != 200:
             logger.error(f"[SUPABASE-ERR] Supabase status {res.status_code}: {res.text}")
