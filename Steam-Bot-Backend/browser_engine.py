@@ -104,7 +104,7 @@ class AutomationRunner:
                 mail_worker.pre_login()
             )
 
-            # 2. سحب الكود اللحظي (لأن الإيميل صار مفتوح وجاهز مسبقاً)
+            # 2. سحب الكود اللحظي (لأن الإيميل جاهز ومفتوح مسبقاً)
             change_email_code = await mail_worker.fetch_code(timeout_seconds=35)
             logger.info(f"[STEAM_VERIFICATION_CODE]: {change_email_code}")
 
