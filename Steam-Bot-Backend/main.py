@@ -51,9 +51,11 @@ app.add_middleware(
 class ProcessTaskRequest(BaseModel):
     target_contact: str = Field(..., description="The contact/email string to update via automation")
     order_reference: Optional[str] = Field(None, description="Optional external order identifier")
-    sender_filter: Optional[str] = Field(default="noreply@example.com", description="Filter incoming email sender")
-    account_id: Optional[str] = Field(None, description="Specific account ID to use. If null, picks oldest available.")
+    sender_filter: Optional[str] = Field(
+        default="noreply@example.com",
+        description="Filter incoming email sender for verification extraction"
     )
+    account_id: Optional[str] = Field(None, description="Specific account ID to use. If null, picks oldest available.")
 
 
 class TaskResponse(BaseModel):
