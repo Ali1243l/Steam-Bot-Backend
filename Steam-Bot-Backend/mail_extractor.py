@@ -13,31 +13,34 @@ class MailWorker:
         self.page: Page = None
         self.is_outlook = any(d in email.lower() for d in ["outlook", "hotmail", "live.com"])
 
+    async def _block_media(self, page: Page):
+        async def route_handler(route):
+            if route.request.resource_type in ["image", "media", "font"]:
+                await route.abort()
+            else:
+                await route.continue_()
+        await page.route("**/*", route_handler)
+
     async def pre_login(self):
-        """تسجيل الدخول لـ Outlook أو Xomail"""
         self.page = await self.context.new_page()
+        await self._block_media(self.page)
         try:
             if self.is_outlook:
                 logger.info(f"[OUTLOOK:PARALLEL] Opening Outlook login for {self.email}...")
                 await self.page.goto("https://login.live.com/login.srf", wait_until="domcontentloaded", timeout=35000)
-                await asyncio.sleep(2)
+                await asyncio.sleep(1.5)
 
-                # فحص هل تم التحويل لصفحة تسويقية بها زر Sign in
                 marketing_signin = await self.page.query_selector("a:has-text('Sign in'), button:has-text('Sign in'), a[data-m*='signin']")
                 if marketing_signin:
-                    logger.info("[OUTLOOK] Clicked marketing page Sign In button...")
                     await marketing_signin.click(force=True)
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(1.5)
 
-                # 1. إدخال البريد
                 email_selector = "input#i0116, input[name='loginfmt'], input[type='email'], input[type='text']:visible"
                 email_input = await self.page.wait_for_selector(email_selector, timeout=20000)
                 await email_input.click(force=True)
-                await email_input.fill("")
                 await email_input.fill(self.email)
                 await self.page.keyboard.press("Enter")
 
-                # نقر زر التالي إن وجد
                 next_btn = await self.page.query_selector("input#idSIButton9, button[type='submit']")
                 if next_btn:
                     try:
@@ -45,13 +48,11 @@ class MailWorker:
                     except Exception:
                         pass
 
-                await asyncio.sleep(2.5)
+                await asyncio.sleep(2)
 
-                # 2. إدخال كلمة المرور
                 pwd_selector = "input#i0118, input[name='passwd'], input[type='password']:visible"
                 pwd_input = await self.page.wait_for_selector(pwd_selector, timeout=20000)
                 await pwd_input.click(force=True)
-                await pwd_input.fill("")
                 await pwd_input.fill(self.password)
                 await self.page.keyboard.press("Enter")
 
@@ -62,14 +63,13 @@ class MailWorker:
                     except Exception:
                         pass
 
-                await asyncio.sleep(3)
+                await asyncio.sleep(2.5)
 
-                # 3. تخطي شاشة "Stay signed in?"
                 decline_btn = await self.page.query_selector("input#declineButton, input#idBtn_Back, button:has-text('No'), input[value='No']")
                 if decline_btn:
                     try:
                         await decline_btn.click(force=True)
-                        await asyncio.sleep(2)
+                        await asyncio.sleep(1.5)
                     except Exception:
                         pass
 
@@ -91,17 +91,15 @@ class MailWorker:
             logger.warning(f"[MAIL:PRE_LOGIN_WARN] Pre-login issue: {str(e)}")
 
     async def fetch_code(self, timeout_seconds: int = 50) -> str:
-        """استخراج كود ستيم من البريد"""
         if not self.page or self.page.is_closed():
             await self.pre_login()
 
         logger.info(f"[MAIL:FETCH] Monitoring incoming Steam verification email for {self.email}...")
 
         if self.is_outlook:
-            # البحث عن رسالة ستيم في Outlook
             steam_msg_selector = "xpath=//div[@role='option'][contains(., 'Steam')] | xpath=//div[@aria-label and contains(@aria-label, 'Steam')] | div:has-text('Steam Support')"
             
-            for _ in range(timeout_seconds // 3):
+            for _ in range(timeout_seconds // 2):
                 try:
                     msg = await self.page.query_selector(steam_msg_selector)
                     if msg:
@@ -109,9 +107,9 @@ class MailWorker:
                         break
                 except Exception:
                     pass
-                await asyncio.sleep(3)
+                await asyncio.sleep(2)
 
-            await asyncio.sleep(2)
+            await asyncio.sleep(1.5)
             body_text = await self.page.inner_text("body")
 
             match = re.search(r"(?:credentials:|code:?)\s*([A-Z0-9]{5})\b", body_text, re.IGNORECASE)
@@ -136,7 +134,7 @@ class MailWorker:
                     await refresh_btn.click(force=True)
                 await asyncio.sleep(2)
 
-            await asyncio.sleep(2)
+            await asyncio.sleep(1.5)
             content_frame = None
             for frame in self.page.frames:
                 if "messagecontframe" in frame.name or "watermark" in frame.name:
@@ -163,4 +161,7 @@ class MailWorker:
 
     async def close(self):
         if self.page and not self.page.is_closed():
-            await self.page.close()
+            try:
+                await self.page.close()
+            except Exception:
+                pass
