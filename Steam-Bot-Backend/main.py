@@ -1,6 +1,6 @@
 """
 main.py - FastAPI Application Server & Task Dispatcher
-Full Supabase synchronization adhering strictly to stock_accounts schema.
+Includes static route /screenshots to view live Playwright screenshots from AWS EC2.
 """
 
 import os
@@ -8,6 +8,7 @@ import logging
 import httpx
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
 
@@ -15,6 +16,9 @@ from browser_engine import AutomationRunner
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("main")
+
+# Ensure artifacts directory exists
+os.makedirs("./artifacts/screenshots", exist_ok=True)
 
 DEFAULT_SUPABASE_URL = os.getenv("SUPABASE_URL", "https://mgddwvkgswdahragsazv.supabase.co")
 DEFAULT_SUPABASE_KEY = (
@@ -45,6 +49,9 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Steam Automation API", lifespan=lifespan)
 
+# Mount screenshots directory to view live images at http://13.61.178.211:8000/screenshots/steam.png
+app.mount("/screenshots", StaticFiles(directory="./artifacts/screenshots"), name="screenshots")
+
 async def process_account_task(record_id: str, target_email: Optional[str] = None, custom_key: Optional[str] = None):
     headers = build_supabase_headers(custom_key)
     
@@ -58,7 +65,6 @@ async def process_account_task(record_id: str, target_email: Optional[str] = Non
         if target_email:
             record["target_email"] = target_email
 
-        # Update status to processing
         await client.patch(
             f"{DEFAULT_SUPABASE_URL}/rest/v1/stock_accounts?id=eq.{record_id}",
             json={"status": "processing"},
@@ -67,7 +73,6 @@ async def process_account_task(record_id: str, target_email: Optional[str] = Non
 
         try:
             result = await runner.execute_task(record)
-            # Update status to completed and store code in target_verification_code column if present
             patch_data = {"status": "completed"}
             if "target_verification_code" in record:
                 patch_data["target_verification_code"] = result.get('code')
@@ -88,7 +93,11 @@ async def process_account_task(record_id: str, target_email: Optional[str] = Non
 
 @app.get("/")
 def read_root():
-    return {"status": "online", "service": "Steam Automation Engine"}
+    return {
+        "status": "online", 
+        "service": "Steam Automation Engine",
+        "screenshots": "Access http://YOUR_SERVER_IP:8000/screenshots/steam.png to view browser state"
+    }
 
 @app.get("/openapi.json")
 def get_openapi():
