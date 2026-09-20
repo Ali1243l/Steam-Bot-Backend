@@ -1,12 +1,12 @@
 """
-browser_engine.py - Hybrid IMAP & Stealth Playwright Automation Engine
+browser_engine.py - Hybrid Thread-Safe IMAP & Stealth Playwright Automation Engine
 """
 
 import re
 import os
+import time
 import imaplib
 import email
-from email.header import decode_header
 import asyncio
 import logging
 from typing import Dict, Any, Optional
@@ -31,49 +31,48 @@ STEALTH_ARGS = [
 
 
 # ============================================================================
-# METHOD 1: Direct Python IMAP Extraction (Primary)
+# METHOD 1: Thread-Safe Synchronous IMAP Extraction (Primary)
 # ============================================================================
 def fetch_code_via_imap(email_address: str, password: str, timeout_seconds: int = 45) -> Optional[str]:
     """
-    Connects directly to outlook.office365.com via IMAP over SSL (Port 993),
-    searches recent inbox messages, and extracts the 5-character Steam verification code.
+    Pure synchronous worker function meant to run inside a separate thread via asyncio.to_thread.
+    Uses standard time.sleep() and time.time() to remain strictly independent of the asyncio loop.
     """
-    logger.info(f"[IMAP-ENGINE] Attempting direct IMAP connection to outlook.office365.com for: {email_address}")
-    start_time = asyncio.get_event_loop().time()
+    logger.info(f"[IMAP-ENGINE] Thread started. Connecting to IMAP server for: {email_address}")
+    start_time = time.time()
 
     # Determine IMAP server host based on domain
     domain = email_address.split("@")[-1].lower() if "@" in email_address else ""
     if any(domain.endswith(d) for d in ["outlook.com", "hotmail.com", "live.com", "msn.com"]):
         imap_host = "outlook.office365.com"
     else:
-        # Fallback host if custom domain
         imap_host = "outlook.office365.com"
 
     try:
         mail = imaplib.IMAP4_SSL(imap_host, 993)
         mail.login(email_address, password)
-        logger.info("[IMAP-ENGINE] IMAP Authentication successful.")
+        logger.info("[IMAP-ENGINE] Direct IMAP Authentication successful.")
 
-        while (asyncio.get_event_loop().time() - start_time) < timeout_seconds:
+        while (time.time() - start_time) < timeout_seconds:
             mail.select("INBOX")
-            
-            # Search for unseen messages or all recent messages
+
+            # Search unseen messages first
             status, messages = mail.search(None, "UNSEEN")
             mail_ids = messages[0].split()
-            
+
+            # Fallback to searching all recent messages if no unseen found
             if not mail_ids:
-                # If no unseen messages, search all recent messages
                 status, messages = mail.search(None, "ALL")
                 mail_ids = messages[0].split()
 
-            # Inspect the latest messages (reverse order)
+            # Check latest 5 messages in reverse order
             for msg_id in reversed(mail_ids[-5:]):
                 status, msg_data = mail.fetch(msg_id, "(RFC822)")
                 for response_part in msg_data:
                     if isinstance(response_part, tuple):
                         msg = email.message_from_bytes(response_part[1])
-                        
-                        # Extract email body
+
+                        # Extract payload body
                         body = ""
                         if msg.is_multipart():
                             for part in msg.walk():
@@ -88,22 +87,29 @@ def fetch_code_via_imap(email_address: str, password: str, timeout_seconds: int 
                             if payload:
                                 body = payload.decode(errors="ignore")
 
-                        # Parse 5-character alphanumeric verification code
+                        # Parse 5-character verification code
                         match = re.search(r'\b[A-Z0-9]{5}\b', body)
                         if match:
                             code = match.group(0)
-                            logger.info(f"[IMAP-ENGINE] Verification code successfully retrieved via IMAP: {code}")
-                            mail.logout()
+                            logger.info(f"[IMAP-ENGINE] Code successfully extracted via IMAP: {code}")
+                            try:
+                                mail.logout()
+                            except Exception:
+                                pass
                             return code
 
-            asyncio.run(asyncio.sleep(3))
+            # Synchronous thread sleep (will not block async Playwright loop)
+            time.sleep(3)
 
-        mail.logout()
-        logger.warning("[IMAP-ENGINE] Polling timeout reached without finding verification code.")
+        try:
+            mail.logout()
+        except Exception:
+            pass
+        logger.warning("[IMAP-ENGINE] IMAP polling window timed out without finding code.")
         return None
 
     except Exception as err:
-        logger.warning(f"[IMAP-ENGINE] Direct IMAP connection failed: {str(err)}. Will trigger browser fallback.")
+        logger.warning(f"[IMAP-ENGINE] Direct IMAP connection failed: {str(err)}")
         return None
 
 
@@ -112,7 +118,7 @@ def fetch_code_via_imap(email_address: str, password: str, timeout_seconds: int 
 # ============================================================================
 async def fetch_code_via_browser_fallback(context: BrowserContext, email_address: str, password: str, timeout_seconds: int = 60) -> str:
     """
-    Fallback browser automation for Microsoft login with explicit multi-step transition handling.
+    Fallback browser automation for Microsoft login handling multi-step transitions.
     """
     logger.info(f"[BROWSER-FALLBACK] Navigating to Microsoft Live login for: {email_address}")
     page = await context.new_page()
@@ -128,9 +134,9 @@ async def fetch_code_via_browser_fallback(context: BrowserContext, email_address
         # Click Next
         next_btn = await page.wait_for_selector('input[type="submit"], #idSIButton9', timeout=10000)
         await next_btn.click()
-        logger.info("[BROWSER-FALLBACK] Submitted username. Waiting for password field to become visible...")
+        logger.info("[BROWSER-FALLBACK] Submitted username. Waiting for password field...")
 
-        # Step 2: Explicitly wait for Password Field to become visible (Multi-Step Transition)
+        # Step 2: Explicitly wait for Password Field
         pass_input = await page.wait_for_selector(
             'input[type="password"]:visible, input[name="passwd"]:visible, #i0116:visible', 
             state="visible", 
@@ -143,7 +149,7 @@ async def fetch_code_via_browser_fallback(context: BrowserContext, email_address
         await signin_btn.click()
         await page.wait_for_timeout(3000)
 
-        # Handle "Stay Signed In?" Prompt if present
+        # Handle "Stay Signed In?" Prompt
         stay_signed_btn = await page.query_selector('#idSIButton9, input[value="Yes"], #idBtn_Back')
         if stay_signed_btn:
             await stay_signed_btn.click()
@@ -180,17 +186,14 @@ async def fetch_code_via_browser_fallback(context: BrowserContext, email_address
 # ============================================================================
 async def smart_get_verification_code(context: BrowserContext, email_address: str, password: str, timeout_seconds: int = 60) -> str:
     """
-    Attempts direct IMAP retrieval first. If IMAP fails or is unavailable, 
-    falls back to multi-step browser automation.
+    Safely dispatches the blocking IMAP function to a background worker thread via asyncio.to_thread.
     """
-    # 1. Primary Attempt: Direct IMAP
-    loop = asyncio.get_running_loop()
-    code = await loop.run_in_executor(None, fetch_code_via_imap, email_address, password, timeout_seconds)
+    logger.info("[SMART-DISPATCHER] Dispatching IMAP task to worker thread...")
+    code = await asyncio.to_thread(fetch_code_via_imap, email_address, password, timeout_seconds)
     if code:
         return code
 
-    # 2. Secondary Attempt: Browser Automation Fallback
-    logger.info("[SMART-DISPATCHER] Direct IMAP failed or timed out. Engaging Browser Fallback Engine...")
+    logger.info("[SMART-DISPATCHER] Direct IMAP failed or timed out. Switching to Browser Fallback Engine...")
     return await fetch_code_via_browser_fallback(context, email_address, password, timeout_seconds)
 
 
@@ -285,8 +288,8 @@ class AutomationRunner:
                     logger.info("[STEP 3] Triggered verification code email from Steam.")
                     await page.wait_for_timeout(3000)
 
-                # 4. Fetch Code (IMAP First, Browser Fallback Second)
-                logger.info("[STEP 4] Fetching verification code via IMAP / Smart Dispatcher...")
+                # 4. Fetch Code (Thread-Safe IMAP First, Browser Fallback Second)
+                logger.info("[STEP 4] Fetching verification code via Thread-Safe IMAP...")
                 verification_code = await smart_get_verification_code(
                     context=context,
                     email_address=orig_email,
