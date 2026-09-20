@@ -25,24 +25,34 @@ class AutomationRunner:
                     "--no-sandbox",
                     "--disable-setuid-sandbox",
                     "--disable-dev-shm-usage",
-                    "--disable-gpu"
+                    "--disable-gpu",
+                    "--disable-features=Translate,OptimizationHints",
+                    "--no-zygote",
+                    "--single-process"
                 ]
             )
 
+    async def _block_heavy_resources(self, page):
+        """منع تحميل الصور والخطوط والميديا لتقليل استهلاك الرام ومنع السيرفر من الانهيار"""
+        async def route_handler(route):
+            if route.request.resource_type in ["image", "media", "font"]:
+                await route.abort()
+            else:
+                await route.continue_()
+        await page.route("**/*", route_handler)
+
     async def _sign_out_everywhere(self, page):
-        """تسجيل خروج كامل وتأكيد النافذة المنبثقة"""
         try:
             logger.info("[LOGOUT] Opening authorized devices to sign out everywhere...")
             await page.goto("https://store.steampowered.com/account/authorizeddevices", wait_until="domcontentloaded", timeout=15000)
-            await asyncio.sleep(2)
+            await asyncio.sleep(1.5)
 
             sign_out_btn = await page.wait_for_selector("button.btn_red_white_text, button:has-text('Sign out everywhere')", timeout=8000)
             if sign_out_btn:
                 await sign_out_btn.click(force=True)
                 logger.info("[LOGOUT] Clicked primary button. Confirming modal dialog...")
-                await asyncio.sleep(1.5)
+                await asyncio.sleep(1.2)
 
-                # محددات تأكيد المودال الشاملة
                 confirm_selectors = [
                     "xpath=//div[contains(@class, 'modal_frame')]//button[contains(., 'Sign out everywhere')]",
                     "xpath=//div[contains(@class, 'newmodal')]//span[contains(., 'Sign out everywhere')]",
@@ -56,17 +66,17 @@ class AutomationRunner:
                         modal_btn = await page.query_selector(c_sel)
                         if modal_btn:
                             await modal_btn.click(force=True)
-                            logger.info("[LOGOUT:SUCCESS] Confirmed sign-out modal. All sessions revoked.")
+                            logger.info("[LOGOUT:SUCCESS] Confirmed sign-out modal. Sessions revoked.")
                             break
                     except Exception:
                         continue
 
-                await asyncio.sleep(2)
+                await asyncio.sleep(1.5)
         except Exception as e:
-            logger.warning(f"[LOGOUT:WARN] Sign out everywhere encountered issue: {str(e)}")
+            logger.warning(f"[LOGOUT:WARN] Sign out everywhere issue: {str(e)}")
 
     async def _steam_login_and_request(self, page, steam_user, steam_pass):
-        """تسجيل دخول ستيم وطلب كود التغيير"""
+        await self._block_heavy_resources(page)
         logger.info("Opening Steam Change Email page...")
         await page.goto("https://help.steampowered.com/en/wizard/HelpChangeEmail/", wait_until="domcontentloaded", timeout=35000)
 
@@ -81,9 +91,8 @@ class AutomationRunner:
             await page.fill(pwd_selector, steam_pass)
             await page.keyboard.press("Enter")
 
-            await asyncio.sleep(3)
+            await asyncio.sleep(2.5)
 
-        # طلب إرسال الكود للإيميل المسجل
         target_button = await page.wait_for_selector(
             "xpath=//a[contains(., 'Email an account verification code')] | //button[contains(., 'Email an account verification code')]",
             timeout=15000
@@ -96,7 +105,7 @@ class AutomationRunner:
         await self.initialize()
         context = await self.browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            viewport={"width": 1920, "height": 1080}
+            viewport={"width": 1280, "height": 720}
         )
         page = await context.new_page()
 
@@ -110,21 +119,22 @@ class AutomationRunner:
         mail_worker = MailWorker(context, orig_email, email_pass)
 
         try:
-            # 1. تشغيل متوازي: طلب الكود من ستيم + فتح البريد
-            logger.info("[PARALLEL:START] Starting Steam flow & Mail pre-login simultaneously...")
+            logger.info("[PARALLEL:START] Starting lightweight parallel execution...")
             await asyncio.gather(
                 self._steam_login_and_request(page, steam_user, steam_pass),
                 mail_worker.pre_login()
             )
 
-            # 2. سحب الكود اللحظي
             change_email_code = await mail_worker.fetch_code(timeout_seconds=45)
             logger.info(f"[STEAM_VERIFICATION_CODE]: {change_email_code}")
+
+            # إغلاق صفحة الإيميل فوراً بعد سحب الكود لتفريغ الرام
+            await mail_worker.close()
 
             await page.wait_for_load_state("domcontentloaded")
             await asyncio.sleep(1)
 
-            # 3. إدخال كود التحقق الأول
+            # إدخال كود التحقق
             code_selectors = [
                 "input#email_reset_code",
                 "input[name='code']",
@@ -151,7 +161,7 @@ class AutomationRunner:
 
             await asyncio.sleep(2)
 
-            # 4. إدخال الإيميل الجديد
+            # إدخال الإيميل الجديد
             logger.info(f"Entering target new email: {new_email}")
             new_email_selector = "input#email_input, input#email, input[name='new_email'], input[type='text']:not([readonly]):visible"
             new_email_input = await page.wait_for_selector(new_email_selector, timeout=20000)
@@ -169,9 +179,9 @@ class AutomationRunner:
 
             await asyncio.sleep(2.5)
 
-            # 5. انتظار كود الواجهة (مهلة 15 دقيقة)
+            # انتظار كود الواجهة (15 دقيقة)
             if self.supabase and account_id:
-                logger.info(f"[WAITING] Waiting for user input from UI (Timeout: 15 minutes) for account {account_id}...")
+                logger.info(f"[WAITING] Waiting for UI confirmation code (15 minutes) for account {account_id}...")
                 self.supabase.table("stock_accounts").update({
                     "status": "waiting_code",
                     "target_verification_code": None
@@ -186,10 +196,9 @@ class AutomationRunner:
                         break
 
                 if not user_code:
-                    logger.warning("[TIMEOUT] 15 minutes exceeded without user input. Cancelling task.")
                     raise TimeoutError("User did not submit verification code within 15 minutes.")
 
-                logger.info(f"[RECEIVED] Submitting user target code: {user_code}")
+                logger.info(f"[RECEIVED] Submitting UI code: {user_code}")
                 final_input_selector = "input#email_reset_code, input#code, input[name='code'], input[type='text']:not([readonly]):visible"
                 final_input = await page.wait_for_selector(final_input_selector, timeout=15000)
                 await final_input.click(force=True)
@@ -205,10 +214,10 @@ class AutomationRunner:
 
                 await asyncio.sleep(2.5)
 
-            # 6. تسجيل الخروج الشامل
+            # تسجيل الخروج من كل الأجهزة
             await self._sign_out_everywhere(page)
 
-            logger.info("Process finished successfully! Steam email updated & sessions cleared.")
+            logger.info("Pipeline completed successfully! Steam email updated & sessions cleared.")
             return {"status": "success", "message": "Email updated successfully"}
 
         except Exception as e:
