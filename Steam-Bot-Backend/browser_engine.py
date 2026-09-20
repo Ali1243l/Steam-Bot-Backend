@@ -1,6 +1,6 @@
 """
-browser_engine.py - Absolute Resilient Engine with Visual Screenshot Debugging
-Captures step-by-step screenshots to /artifacts/screenshots/ viewable via HTTP.
+browser_engine.py - Full Production Playwright Automation Engine
+Excludes store search inputs and targets precise Steam Login Form fields.
 """
 
 import re
@@ -94,7 +94,6 @@ async def fetch_code_via_browser(page: Page, email_addr: str, email_pass: str) -
         await mail_page.goto("https://outlook.live.com/mail/0/", wait_until="networkidle")
         await asyncio.sleep(5)
         
-        # Save screenshot of Outlook Inbox state
         await mail_page.screenshot(path="./artifacts/screenshots/outlook.png")
         
         content = await mail_page.content()
@@ -180,30 +179,41 @@ class AutomationRunner:
             await page.goto("https://store.steampowered.com/login/", wait_until="networkidle")
             await asyncio.sleep(2)
 
-            # Step 2: Fill Steam Username & Password
-            logger.info("[STEP 2] Typing credentials via Keyboard Focus...")
+            # Dismiss Cookie Banner if visible
+            try:
+                cookie_btn = page.locator('#acceptAllButton, button:has-text("Accept All")').first
+                if await cookie_btn.is_visible():
+                    await cookie_btn.click(force=True)
+                    await asyncio.sleep(1)
+            except Exception: pass
+
+            # Step 2: Target PRECISE Login Form Inputs (Excluding top store search bar #store_nav_search_term)
+            logger.info("[STEP 2] Targeting precise Steam Sign-In form fields...")
             
-            user_input = page.locator('input[type="text"]').first
+            # Select ONLY login username input (ignoring search bar)
+            user_input = page.locator('input[type="text"]:not(#store_nav_search_term)').first
             pass_input = page.locator('input[type="password"]').first
-            
+
+            # Fill Username
             await user_input.scroll_into_view_if_needed()
             await user_input.focus()
             await user_input.fill(str(steam_user), force=True)
             await asyncio.sleep(1)
 
+            # Fill Password
             await pass_input.scroll_into_view_if_needed()
             await pass_input.focus()
             await pass_input.fill(str(steam_pass), force=True)
             await asyncio.sleep(1)
 
             # Submit Form
-            logger.info("[STEP 3] Submitting login via Keyboard Enter...")
-            await page.keyboard.press("Enter")
+            logger.info("[STEP 3] Submitting login form...")
+            submit_btn = page.locator('button[type="submit"]').first
+            await submit_btn.click(force=True)
             await asyncio.sleep(5)
 
-            # Save Live Screenshot of Steam State
+            # Save Live Screenshot of Steam Login Attempt
             await page.screenshot(path="./artifacts/screenshots/steam.png")
-            logger.info("[VISUAL-DEBUG] Saved live screenshot to http://13.61.178.211:8000/screenshots/steam.png")
 
             # Step 4: Fetch Verification Code from Email
             logger.info("[STEP 4] Fetching Steam Guard code...")
