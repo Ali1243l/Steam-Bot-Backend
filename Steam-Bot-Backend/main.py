@@ -24,7 +24,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 
 # Load environment variables
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", os.getenv("SUPABASE_ANON_KEY", "")).strip()
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")).strip()
 IMAP_HOST = os.getenv("DEFAULT_IMAP_SERVER", "imap.example.com").strip()
 TARGET_DASHBOARD_URL = os.getenv("TARGET_DASHBOARD_URL", "https://example.com/settings").strip()
 
@@ -36,6 +36,14 @@ app = FastAPI(
     version="1.0.0",
     description="Asynchronous orchestrator for database-driven browser tasks.",
 )
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 
 
 # Request and Response Schemas
