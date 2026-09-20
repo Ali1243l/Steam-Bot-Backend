@@ -1,6 +1,6 @@
 """
-browser_engine.py - Full Production Playwright Automation Engine
-Executes real DOM interaction with Steam Login and Microsoft Outlook Webmail.
+browser_engine.py - React-Compatible Steam Login & Live Verification Engine
+Emulates real keyboard typing for React/Redux forms and captures UI state screenshots.
 """
 
 import re
@@ -73,27 +73,24 @@ async def fetch_code_via_browser(page: Page, email_addr: str, email_pass: str) -
         mail_page = await page.context.new_page()
         await mail_page.goto("https://login.live.com/", wait_until="networkidle")
         
-        # Fill Microsoft Login (Supports name="loginfmt", id="i0116", or type="email")
         email_selector = 'input[name="loginfmt"], input[type="email"], #i0116'
         await mail_page.wait_for_selector(email_selector, timeout=10000)
-        await mail_page.fill(email_selector, email_addr)
+        await mail_page.click(email_selector)
+        await mail_page.keyboard.type(email_addr, delay=30)
         await mail_page.click('input[type="submit"], #idSIButton9')
         await asyncio.sleep(2)
         
-        # Fill Password
         pass_selector = 'input[name="passwd"], input[type="password"], #i0118'
         await mail_page.wait_for_selector(pass_selector, timeout=10000)
-        await mail_page.fill(pass_selector, email_pass)
+        await mail_page.click(pass_selector)
+        await mail_page.keyboard.type(email_pass, delay=30)
         await mail_page.click('input[type="submit"], #idSIButton9')
         await asyncio.sleep(3)
         
-        # Dismiss 'Stay signed in?' prompt if appears
         if await mail_page.is_visible('input[id="acceptButton"]'):
             await mail_page.click('input[id="acceptButton"]')
             
         await asyncio.sleep(4)
-        
-        # Navigate to inbox
         await mail_page.goto("https://outlook.live.com/mail/0/", wait_until="networkidle")
         await asyncio.sleep(5)
         
@@ -115,7 +112,7 @@ async def get_steam_code(page: Page, email_addr: str, email_pass: str) -> Option
     return await fetch_code_via_browser(page, email_addr, email_pass)
 
 # ==============================================================================
-# 2. REAL AUTOMATION RUNNER CLASS
+# 2. AUTOMATION RUNNER CLASS
 # ==============================================================================
 class AutomationRunner:
     def __init__(self, proxy_url: Optional[str] = None):
@@ -170,28 +167,42 @@ class AutomationRunner:
 
         page = await self.context.new_page()
         try:
+            os.makedirs("./artifacts/screenshots", exist_ok=True)
+            
             # Step 1: Open Steam Login Page
             logger.info("[STEP 1] Opening Steam login page...")
             await page.goto("https://store.steampowered.com/login/", wait_until="networkidle")
             await asyncio.sleep(2)
 
-            # Step 2: Fill Steam Username and Password on UI
-            logger.info("[STEP 2] Submitting Steam credentials to DOM...")
+            # Step 2: Fill Steam Username and Password via React-compatible Keyboard Typing
+            logger.info("[STEP 2] Typing credentials into Steam React Form...")
             
-            # Select inputs on Steam modern React UI
-            inputs = await page.query_selector_all('input[type="text"], input[type="password"]')
-            if len(inputs) >= 2:
-                await inputs[0].fill(str(steam_user))
-                await inputs[1].fill(str(steam_pass))
-            else:
-                # Fallback selectors
-                await page.fill('input[type="text"]', str(steam_user))
-                await page.fill('input[type="password"]', str(steam_pass))
+            user_input = page.locator('input[type="text"]').first
+            pass_input = page.locator('input[type="password"]').first
+            
+            await user_input.click()
+            await user_input.fill("")
+            await page.keyboard.type(str(steam_user), delay=30)
+            
+            await pass_input.click()
+            await pass_input.fill("")
+            await page.keyboard.type(str(steam_pass), delay=30)
+            
+            await asyncio.sleep(1)
 
             # Click Sign In button
-            await page.click('button[type="submit"]')
-            logger.info("[STEP 3] Login submitted to Steam. Waiting for Steam Guard email dispatch...")
-            await asyncio.sleep(5)
+            submit_btn = page.locator('button[type="submit"]').first
+            await submit_btn.click()
+            logger.info("[STEP 3] Login submitted! Waiting for Steam response...")
+            await asyncio.sleep(4)
+
+            # Capture screenshot immediately after submit
+            await page.screenshot(path="./artifacts/screenshots/steam_after_submit.png")
+            
+            page_text = await page.content()
+            if "Please check your password and account name" in page_text or "The account name or password that you have entered is incorrect" in page_text:
+                logger.error("[STEAM-RESPONSE] Incorrect username or password according to Steam!")
+                raise Exception("STEAM_AUTH_FAILED: Incorrect username or password in database.")
 
             # Step 4: Fetch Verification Code from Email
             logger.info("[STEP 4] Fetching Steam Guard code...")
@@ -205,7 +216,8 @@ class AutomationRunner:
             # Step 5: Input Verification Code into Steam Guard UI Prompt
             guard_input = await page.wait_for_selector('input[type="text"]', timeout=10000)
             if guard_input:
-                await guard_input.fill(code)
+                await guard_input.click()
+                await page.keyboard.type(code, delay=50)
                 logger.info("[STEP 6] Code entered into Steam Guard input prompt!")
 
             await page.screenshot(path="./artifacts/screenshots/login_success.png")
@@ -214,7 +226,6 @@ class AutomationRunner:
         except Exception as e:
             logger.error(f"[PIPELINE-ERROR] Task execution failed: {e}")
             try:
-                os.makedirs("./artifacts/screenshots", exist_ok=True)
                 await page.screenshot(path="./artifacts/screenshots/error_.png")
             except Exception: pass
             raise e
