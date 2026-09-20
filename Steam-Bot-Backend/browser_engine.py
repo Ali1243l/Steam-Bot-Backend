@@ -64,23 +64,37 @@ class AutomationRunner:
                 await pwd_el.click(force=True)
                 await pwd_el.fill(steam_pass)
                 await page.keyboard.press("Enter")
+            else:
+                submit_btn = await page.query_selector("button[type='submit']")
+                if submit_btn:
+                    await submit_btn.click(force=True)
 
             await page.wait_for_timeout(8000)
 
-            # 2. التوجه لصفحة تغيير الإيميل
+            # 2. التوجه المباشر لرابط تغيير الإيميل
             logger.info("Navigating to Steam Change Email wizard...")
             await page.goto("https://help.steampowered.com/en/wizard/HelpChangeEmail/", wait_until="domcontentloaded", timeout=30000)
             await page.wait_for_timeout(4000)
 
-            # 3. إرسال الكود للإيميل القديم
-            send_code_btn = await page.query_selector("button:has-text('Email'), .btn_blue_steamui, #email_verification_dialog button")
+            # فحص حالة تسجيل الدخول وطباعة عنوان الصفحة الحالي
+            current_title = await page.title()
+            logger.info(f"[STEAM_PAGE] Current Page Title: {current_title} | URL: {page.url}")
+
+            # 3. الضغط على الخيار الصحيح لإرسال الكود للإيميل المسجل
+            send_code_selector = "a:has-text('Email'), button:has-text('Email'), .help_wizard_button, #email_verification_dialog button"
+            send_code_btn = await page.wait_for_selector(send_code_selector, timeout=15000)
             if send_code_btn:
                 await send_code_btn.click(force=True)
-                logger.info("Clicked request verification code on Steam.")
+                logger.info("[STEAM] Clicked 'Email an account verification code'. Waiting for email delivery...")
+            else:
+                logger.warning("[STEAM:WARN] Could not find send code button. Printing body preview:")
+                body_snippet = await page.inner_text("body")
+                logger.warning(f"[PAGE_BODY]: {body_snippet[:300].replace(chr(10), ' ')}")
 
-            await page.wait_for_timeout(5000)
+            # ننتظر 10 ثواني كاملة حتى يوصل الإيميل الحقيقي من ستيم للسيرفر
+            await page.wait_for_timeout(10000)
 
-            # 4. استخراج الكود من بريد xomail
+            # 4. جلب الكود الحقيقي من xomail
             logger.info(f"Fetching code from xomail for: {orig_email}")
             verification_code = await fetch_code_from_xomail(
                 context=context,
@@ -88,16 +102,17 @@ class AutomationRunner:
                 password=email_pass,
                 timeout_seconds=60
             )
-            logger.info(f"Extracted Verification Code: {verification_code}")
+            logger.info(f"[EXTRACTED_CODE]: {verification_code}")
 
-            # 5. تأكيد الكود القديم
+            # 5. كتابة الكود وتأكيده بصفحة ستيم
             code_selector = "input[name='code'], input[type='text']:visible"
             code_input = await page.wait_for_selector(code_selector, timeout=20000)
             if code_input:
                 await code_input.click(force=True)
                 await code_input.fill(verification_code)
+                await page.keyboard.press("Enter")
 
-            submit_btn = await page.query_selector("button[type='submit'], .btn_blue_steamui")
+            submit_btn = await page.query_selector("button[type='submit'], .btn_blue_steamui, input[type='submit']")
             if submit_btn:
                 await submit_btn.click(force=True)
 
@@ -109,24 +124,29 @@ class AutomationRunner:
             new_email_input = await page.wait_for_selector(new_email_selector, timeout=25000)
             if new_email_input:
                 await new_email_input.click(force=True)
-                await new_email_input.fill(new_email)
+                await new_email_input.fill("")
+                await page.keyboard.type(new_email, delay=40)
+                await page.keyboard.press("Enter")
 
             confirm_btn = await page.query_selector("button[type='submit'], .btn_blue_steamui, button:has-text('Change Email')")
             if confirm_btn:
                 await confirm_btn.click(force=True)
 
-            await page.wait_for_timeout(5000)
+            await page.wait_for_timeout(6000)
 
-            # 7. مرحلة انتظار الكود من المستخدم عبر الواجهة
+            # فحص وتأكيد نجاح إرسال كود التأكيد للإيميل الجديد
+            status_text = await page.inner_text("body")
+            logger.info(f"[STEAM_RESULT]: {status_text[:350].replace(chr(10), ' ')}")
+
+            # 7. مرحلة انتظار الكود الجديد من المستخدم عبر الواجهة
             if self.supabase and account_id:
-                logger.info(f"[WAITING] Waiting for user to input target email code from UI for account {account_id}...")
+                logger.info(f"[WAITING] Setting status to 'waiting_code' for record {account_id}...")
                 self.supabase.table("stock_accounts").update({
                     "status": "waiting_code",
                     "target_verification_code": None
                 }).eq("id", account_id).execute()
 
                 target_code = None
-                # انتظار لمدة دقيقتين (120 ثانية)
                 for _ in range(60):
                     await asyncio.sleep(2)
                     res = self.supabase.table("stock_accounts").select("target_verification_code").eq("id", account_id).execute()
@@ -135,20 +155,15 @@ class AutomationRunner:
                         break
 
                 if not target_code:
-                    raise TimeoutError("User did not provide the target email verification code in time.")
+                    raise TimeoutError("User did not enter target verification code in time.")
 
-                logger.info(f"[RECEIVED] Got target code from user: {target_code}. Entering into Steam...")
-                
-                # كتابة الكود المستلم من المستخدم
-                target_code_input = await page.wait_for_selector("input[name='code'], input[type='text']:visible", timeout=15000)
-                if target_code_input:
-                    await target_code_input.click(force=True)
-                    await target_code_input.fill(target_code)
+                logger.info(f"[RECEIVED] User entered code: {target_code}. Submitting to Steam...")
+                final_input = await page.wait_for_selector("input[name='code'], input[type='text']:visible", timeout=15000)
+                if final_input:
+                    await final_input.click(force=True)
+                    await final_input.fill(target_code)
+                    await page.keyboard.press("Enter")
 
-                final_submit = await page.query_selector("button[type='submit'], .btn_blue_steamui")
-                if final_submit:
-                    await final_submit.click(force=True)
-                
                 await page.wait_for_timeout(5000)
 
             logger.info("Email change process fully completed!")
