@@ -4,8 +4,7 @@ from playwright.async_api import BrowserContext
 
 logger = logging.getLogger("orchestrator.mail")
 
-async def fetch_code_from_outlook_web(context: BrowserContext, email: str, password: str, timeout_seconds: int = 45) -> str:
-    """تسجيل الدخول لبريد أوتلوك عبر المتصفح وسحب كود ستيم"""
+async def fetch_code_from_outlook_web(context: BrowserContext, email: str, password: str, timeout_seconds: int = 50) -> str:
     mail_page = await context.new_page()
     try:
         logger.info(f"[OUTLOOK:WEB] Logging into Outlook Web for {email}...")
@@ -17,38 +16,50 @@ async def fetch_code_from_outlook_web(context: BrowserContext, email: str, passw
         await mail_page.keyboard.press("Enter")
         await mail_page.wait_for_timeout(2500)
 
-        # 2. إدخال الباسوورد
+        # 2. إدخال كلمة المرور
         pwd_input = await mail_page.wait_for_selector("input[type='password'], input[name='passwd']", timeout=15000)
         await pwd_input.fill(password)
         await mail_page.keyboard.press("Enter")
+
+        # انتظار انتهاء التحويلات التلقائية لمايكروسوفت
+        await mail_page.wait_for_load_state("networkidle", timeout=15000)
         await mail_page.wait_for_timeout(3000)
 
-        # 3. تخطي شاشة "Stay signed in?" في حال ظهورها
+        # 3. تخطي نافذة "Stay signed in?" إن ظهرت
         decline_btn = await mail_page.query_selector("input#declineButton, input#idSIButton9, button:has-text('No'), button:has-text('Yes')")
         if decline_btn:
             try:
                 await decline_btn.click(force=True)
+                await mail_page.wait_for_timeout(2000)
             except Exception:
                 pass
 
-        # 4. التوجه لصندوق الوارد في أوتلوك
-        logger.info("[OUTLOOK:WEB] Navigating to Outlook Inbox...")
-        await mail_page.goto("https://outlook.live.com/mail/0/inbox", wait_until="domcontentloaded", timeout=35000)
-        await mail_page.wait_for_timeout(5000)
+        # 4. التوجه المباشر لصندوق البريد والتأكد من استقراره
+        logger.info("[OUTLOOK:WEB] Navigating directly to inbox...")
+        await mail_page.goto("https://outlook.live.com/mail/0/inbox", wait_until="domcontentloaded", timeout=40000)
+        await mail_page.wait_for_load_state("networkidle", timeout=15000)
+        await mail_page.wait_for_timeout(4000)
 
-        # البحث عن رسالة ستيم وفتحها
-        steam_msg_selector = "div[role='option']:has-text('Steam'), div[aria-label*='Steam'], div:has-text('Steam Support')"
+        # 5. البحث عن رسالة Steam والضغط عليها
+        steam_row_selector = "div[role='option']:has-text('Steam'), div[aria-label*='Steam'], div:has-text('Steam Support')"
+        msg_found = False
         for _ in range(timeout_seconds // 4):
-            msg = await mail_page.query_selector(steam_msg_selector)
-            if msg:
-                await msg.click(force=True)
-                break
-            await mail_page.wait_for_timeout(4000)
+            try:
+                msg = await mail_page.query_selector(steam_row_selector)
+                if msg:
+                    await msg.click(force=True)
+                    msg_found = True
+                    break
+            except Exception:
+                pass
+            await mail_page.wait_for_timeout(3500)
 
         await mail_page.wait_for_timeout(3000)
 
-        # 5. استخراج الكود من محتوى الرسالة
+        # 6. استخراج الكود بدقة (الحروف والأرقام مثل 3KQ6T)
         body_text = await mail_page.inner_text("body")
+        
+        # استخراج من الكود الكبير أو النمط القياسي
         pattern = r"(?:credentials:|code:?)\s*([A-Z0-9]{5})\b"
         match = re.search(pattern, body_text, re.IGNORECASE)
         if match:
@@ -56,18 +67,18 @@ async def fetch_code_from_outlook_web(context: BrowserContext, email: str, passw
             logger.info(f"[OUTLOOK:SUCCESS] Found Steam code: {code}")
             return code
 
+        # استخراج بديل لأي 5 أحرف وأرقام تظهر بعد اسم المستخدم
         fallback_match = re.search(r"\b([A-Z0-9]{5})\b", body_text)
         if fallback_match:
             code = fallback_match.group(1).upper()
             logger.info(f"[OUTLOOK:SUCCESS] Found Fallback Steam code: {code}")
             return code
 
-        raise ValueError("Could not find verification code inside Outlook email.")
+        raise ValueError("Could not locate verification code inside Outlook email body.")
     finally:
         await mail_page.close()
 
 async def fetch_code_from_xomail(context: BrowserContext, email: str, password: str, timeout_seconds: int = 40) -> str:
-    """استخراج الكود من بريد xomail / roundcube"""
     mail_page = await context.new_page()
     try:
         logger.info(f"[MAIL] Logging into xomail for {email}...")
@@ -80,7 +91,6 @@ async def fetch_code_from_xomail(context: BrowserContext, email: str, password: 
 
         await mail_page.wait_for_selector("table#messagelist", timeout=15000)
 
-        logger.info("[MAIL] Looking for the latest Steam email...")
         for _ in range(timeout_seconds // 3):
             first_row = await mail_page.query_selector("table#messagelist tbody tr.message:first-child")
             if first_row:
@@ -110,21 +120,19 @@ async def fetch_code_from_xomail(context: BrowserContext, email: str, password: 
                 return clean_code
 
         body_text = await target.inner_text("body")
-        pattern = r"(?:credentials:|code:?)\s*([A-Z0-9]{5})\b"
-        match = re.search(pattern, body_text, re.IGNORECASE)
+        match = re.search(r"(?:credentials:|code:?)\s*([A-Z0-9]{5})\b", body_text, re.IGNORECASE)
         if match:
             return match.group(1).upper()
 
-        fallback_match = re.search(r"\b([A-Z0-9]{5})\b", body_text)
-        if fallback_match:
-            return fallback_match.group(1).upper()
+        fallback = re.search(r"\b([A-Z0-9]{5})\b", body_text)
+        if fallback:
+            return fallback.group(1).upper()
 
         raise ValueError("Could not extract verification code from latest email.")
     finally:
         await mail_page.close()
 
-async def fetch_steam_code(context: BrowserContext, email: str, password: str, timeout_seconds: int = 40) -> str:
-    """الموجّه الذكي: يفحص النطاق ويشغّل الطريقة المناسبة"""
+async def fetch_steam_code(context: BrowserContext, email: str, password: str, timeout_seconds: int = 45) -> str:
     domain = email.split("@")[-1].lower()
     if "outlook" in domain or "hotmail" in domain or "live.com" in domain:
         return await fetch_code_from_outlook_web(context, email, password, timeout_seconds)
