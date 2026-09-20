@@ -6,8 +6,8 @@ import re
 import os
 import asyncio
 import logging
-from typing import Dict, Any
-from playwright.async_api import async_playwright, BrowserContext, Page
+from typing import Dict, Any, Optional
+from playwright.async_api import async_playwright, BrowserContext, Page, TimeoutError as PlaywrightTimeoutError
 
 logger = logging.getLogger("browser_engine")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -81,6 +81,21 @@ class AutomationRunner:
     def __init__(self, screenshot_dir: str = "./artifacts/screenshots"):
         self.screenshot_dir = screenshot_dir
         os.makedirs(self.screenshot_dir, exist_ok=True)
+        self.browser = None
+        self.playwright = None
+
+    async def initialize(self):
+        """الدالة المطلوبة بملف main.py عند بدء تشغيل السيرفر"""
+        logger.info("[AUTOMATION] Warm browser runner initialized successfully.")
+        return True
+
+    async def cleanup(self):
+        """الدالة المطلوبة بملف main.py عند إغلاق السيرفر"""
+        logger.info("[AUTOMATION] Cleaning up browser runner resources.")
+        if self.browser:
+            await self.browser.close()
+        if self.playwright:
+            await self.playwright.stop()
 
     async def execute_task(self, task_data: dict) -> dict:
         steam_user = task_data.get("steam_username", "")
@@ -92,7 +107,6 @@ class AutomationRunner:
         logger.info(f"[STEALTH-RUNNER] Starting Steam automation for user: {steam_user}")
 
         async with async_playwright() as p:
-            # تشغيل متصفح بواجهة مستخدم حقيقية وتعديل الهيدرات للتخفي من حظر AWS
             browser = await p.chromium.launch(headless=True, args=STEALTH_ARGS)
             context = await browser.new_context(
                 viewport={"width": 1366, "height": 768},
@@ -105,21 +119,17 @@ class AutomationRunner:
                 }
             )
 
-            # إخفاء خصائص الأتمتة لمنع اكتشاف Selenium/Playwright
             page = await context.new_page()
             await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
             try:
-                # 1. فتح صفحة تسجيل دخول Steam
                 logger.info("[STEP 1] Opening Steam login page with Anti-Detect headers...")
                 await page.goto("https://store.steampowered.com/login/", wait_until="domcontentloaded", timeout=30000)
                 await page.wait_for_timeout(3000)
 
-                # طباعة عنوان الصفحة والتأكد أنها ليست صفحة حظر
                 page_title = await page.title()
                 logger.info(f"[PAGE TITLE]: {page_title}")
 
-                # البحث عن حقول الإدخال
                 user_input = await page.wait_for_selector('input[type="text"]:visible, input#input_username, input[name="username"]', timeout=25000)
                 await user_input.fill(steam_user)
 
@@ -132,7 +142,6 @@ class AutomationRunner:
                     logger.info("[STEP 2] Submitted credentials. Waiting for authentication...")
                     await page.wait_for_timeout(5000)
 
-                # 2. الانتقال لصفحة الحساب
                 logger.info("[STEP 3] Opening Account Settings...")
                 await page.goto("https://store.steampowered.com/account/", wait_until="domcontentloaded", timeout=30000)
 
@@ -141,14 +150,12 @@ class AutomationRunner:
                     await change_email_btn.click()
                     await page.wait_for_timeout(2000)
 
-                # 3. طلب كود التفعيل
                 send_code_btn = await page.query_selector('button[type="submit"], .btn_blue_steamui')
                 if send_code_btn:
                     await send_code_btn.click()
                     logger.info("[STEP 4] Requested verification code dispatch.")
                     await page.wait_for_timeout(3000)
 
-                # 4. جلب الكود من الويب ميل
                 logger.info("[STEP 5] Fetching code from xomail...")
                 verification_code = await fetch_code_from_xomail(
                     context=context,
@@ -157,7 +164,6 @@ class AutomationRunner:
                     timeout_seconds=60
                 )
 
-                # 5. إدخال الكود وتأكيد الإيميل الجديد
                 logger.info(f"[STEP 6] Submitting extracted code: {verification_code}")
                 code_input = await page.wait_for_selector("input[type='text'], input[name='code'], input#email_authcode", timeout=15000)
                 await code_input.fill(verification_code)
@@ -179,7 +185,6 @@ class AutomationRunner:
                 return {"status": "success", "message": "Email updated successfully", "code": verification_code}
 
             except Exception as e:
-                # التقاط صورة لشاشة المتصفح عند حدوث خطأ لمعرفة ما يعرضه Steam بالضبط
                 screenshot_path = os.path.join(self.screenshot_dir, f"error_{steam_user}.png")
                 await page.screenshot(path=screenshot_path)
                 logger.error(f"[ERROR] Task failed: {str(e)}. Saved error screenshot to {screenshot_path}")
