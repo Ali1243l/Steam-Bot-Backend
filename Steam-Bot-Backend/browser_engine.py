@@ -1,6 +1,6 @@
 """
-browser_engine.py - Production Ready Engine
-Mapped precisely to Supabase schema keys: original_email, steam_username, email_password.
+browser_engine.py - Full Production Playwright Automation Engine
+Executes real DOM interaction with Steam Login and Microsoft Outlook Webmail.
 """
 
 import re
@@ -29,7 +29,10 @@ STEALTH_ARGS = [
     "--disable-extensions",
 ]
 
-def _fetch_code_via_imap_sync(email_addr: str, email_pass: str, timeout: int = 10) -> Optional[str]:
+# ==============================================================================
+# 1. IMAP & REAL WEBMAIL CODE EXTRACTORS
+# ==============================================================================
+def _fetch_code_via_imap_sync(email_addr: str, email_pass: str, timeout: int = 8) -> Optional[str]:
     if not email_addr or email_addr == "None":
         return None
 
@@ -65,40 +68,55 @@ def _fetch_code_via_imap_sync(email_addr: str, email_pass: str, timeout: int = 1
     return None
 
 async def fetch_code_via_browser(page: Page, email_addr: str, email_pass: str) -> Optional[str]:
-    logger.info(f"[WEBMAIL-EXTRACTOR] Opening Outlook for: {email_addr}")
+    logger.info(f"[WEBMAIL-EXTRACTOR] Navigating live browser to Outlook for: {email_addr}")
     try:
         mail_page = await page.context.new_page()
-        await mail_page.goto("https://outlook.live.com/owa/?nlp=1", wait_until="networkidle")
+        await mail_page.goto("https://login.live.com/", wait_until="networkidle")
         
-        await mail_page.fill('input[type="email"]', email_addr)
-        await mail_page.click('input[type="submit"]')
+        # Fill Microsoft Login (Supports name="loginfmt", id="i0116", or type="email")
+        email_selector = 'input[name="loginfmt"], input[type="email"], #i0116'
+        await mail_page.wait_for_selector(email_selector, timeout=10000)
+        await mail_page.fill(email_selector, email_addr)
+        await mail_page.click('input[type="submit"], #idSIButton9')
         await asyncio.sleep(2)
         
-        await mail_page.fill('input[type="password"]', email_pass)
-        await mail_page.click('input[type="submit"]')
+        # Fill Password
+        pass_selector = 'input[name="passwd"], input[type="password"], #i0118'
+        await mail_page.wait_for_selector(pass_selector, timeout=10000)
+        await mail_page.fill(pass_selector, email_pass)
+        await mail_page.click('input[type="submit"], #idSIButton9')
         await asyncio.sleep(3)
         
+        # Dismiss 'Stay signed in?' prompt if appears
         if await mail_page.is_visible('input[id="acceptButton"]'):
             await mail_page.click('input[id="acceptButton"]')
             
+        await asyncio.sleep(4)
+        
+        # Navigate to inbox
+        await mail_page.goto("https://outlook.live.com/mail/0/", wait_until="networkidle")
         await asyncio.sleep(5)
+        
         content = await mail_page.content()
         match = re.search(r'\b([A-Z0-9]{5})\b', content)
         await mail_page.close()
         if match:
             return match.group(1)
     except Exception as e:
-        logger.error(f"[WEBMAIL-EXTRACTOR] Error: {e}")
+        logger.error(f"[WEBMAIL-EXTRACTOR] Webmail DOM Error: {e}")
     return None
 
 async def get_steam_code(page: Page, email_addr: str, email_pass: str) -> Optional[str]:
-    code = await asyncio.to_thread(_fetch_code_via_imap_sync, email_addr, email_pass, 10)
+    code = await asyncio.to_thread(_fetch_code_via_imap_sync, email_addr, email_pass, 8)
     if code and code != "AUTH_DISABLED":
         return code
         
-    logger.warning("[SMART-DISPATCHER] IMAP restricted by Microsoft. Switching to Playwright Webmail...")
+    logger.warning("[SMART-DISPATCHER] Direct IMAP restricted. Launching live Outlook webmail interaction...")
     return await fetch_code_via_browser(page, email_addr, email_pass)
 
+# ==============================================================================
+# 2. REAL AUTOMATION RUNNER CLASS
+# ==============================================================================
 class AutomationRunner:
     def __init__(self, proxy_url: Optional[str] = None):
         self.playwright = None
@@ -131,7 +149,6 @@ class AutomationRunner:
             if isinstance(arg, dict): payload.update(arg)
         if kwargs: payload.update(kwargs)
 
-        # Mapped specifically to Supabase Schema
         steam_user = payload.get("steam_username") or payload.get("username")
         steam_pass = payload.get("steam_password") or payload.get("password")
         
@@ -146,26 +163,56 @@ class AutomationRunner:
         )
         target_email = payload.get("target_email") or payload.get("new_email")
 
-        logger.info(f"[TASK-DATA] Username: {steam_user} | Original Email: {email_addr} | Target: {target_email}")
+        logger.info(f"[TASK-EXECUTION] Logging into Steam: {steam_user} | Mail: {email_addr}")
 
         if not email_addr or str(email_addr).strip() == "None":
-            raise ValueError(f"ERR_MISSING_EMAIL: Email data is empty in payload. Received keys: {list(payload.keys())}")
+            raise ValueError("ERR_MISSING_EMAIL: Email field is empty.")
 
         page = await self.context.new_page()
         try:
-            logger.info("[STEP 1] Navigating to Steam login...")
+            # Step 1: Open Steam Login Page
+            logger.info("[STEP 1] Opening Steam login page...")
             await page.goto("https://store.steampowered.com/login/", wait_until="networkidle")
+            await asyncio.sleep(2)
+
+            # Step 2: Fill Steam Username and Password on UI
+            logger.info("[STEP 2] Submitting Steam credentials to DOM...")
             
-            logger.info("[STEP 2] Fetching verification code...")
+            # Select inputs on Steam modern React UI
+            inputs = await page.query_selector_all('input[type="text"], input[type="password"]')
+            if len(inputs) >= 2:
+                await inputs[0].fill(str(steam_user))
+                await inputs[1].fill(str(steam_pass))
+            else:
+                # Fallback selectors
+                await page.fill('input[type="text"]', str(steam_user))
+                await page.fill('input[type="password"]', str(steam_pass))
+
+            # Click Sign In button
+            await page.click('button[type="submit"]')
+            logger.info("[STEP 3] Login submitted to Steam. Waiting for Steam Guard email dispatch...")
+            await asyncio.sleep(5)
+
+            # Step 4: Fetch Verification Code from Email
+            logger.info("[STEP 4] Fetching Steam Guard code...")
             code = await get_steam_code(page, str(email_addr), str(email_pass))
             
             if not code:
                 raise Exception("Failed to retrieve verification code from email.")
                 
-            logger.info(f"[SUCCESS] Code extracted: {code}")
+            logger.info(f"[STEP 5] Verification Code Extracted Successfully: {code}")
+
+            # Step 5: Input Verification Code into Steam Guard UI Prompt
+            guard_input = await page.wait_for_selector('input[type="text"]', timeout=10000)
+            if guard_input:
+                await guard_input.fill(code)
+                logger.info("[STEP 6] Code entered into Steam Guard input prompt!")
+
+            await page.screenshot(path="./artifacts/screenshots/login_success.png")
             return {"status": "success", "code": code}
+
         except Exception as e:
-            logger.error(f"[PIPELINE-ERROR] {e}")
+            logger.error(f"[PIPELINE-ERROR] Task execution failed: {e}")
             try:
                 os.makedirs("./artifacts/screenshots", exist_ok=True)
                 await page.screenshot(path="./artifacts/screenshots/error_.png")
