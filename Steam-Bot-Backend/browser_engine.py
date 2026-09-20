@@ -1,6 +1,11 @@
 """
-browser_engine.py - Exact Scoped Login Card Engine
-Scopes inputs strictly inside the 'SIGN IN WITH ACCOUNT NAME' container.
+browser_engine.py - Exact HTML/DOM Targeted Steam Engine
+Engine built strictly using user-inspected DOM selectors:
+- Username: input._2GBWeup5cttgBtW8FM3tfx[type="text"]
+- Password: input._2GBWeup5cttgBtW8FM3tfx[type="password"]
+- Submit Button: button.DjSvCZoKKfoNSmarsEcTS
+- Account Pulldown: #account_pulldown
+- Email Code Input: #forgot_login_code
 """
 
 import re
@@ -28,6 +33,16 @@ STEALTH_ARGS = [
     "--disable-gpu",
     "--disable-extensions",
 ]
+
+# Exact Inspected Selectors
+SELECTOR_USERNAME = 'input[class*="_2GBWeup5cttgBtW8FM3tfx"][type="text"], input._2GBWeup5cttgBtW8FM3tfx[type="text"]'
+SELECTOR_PASSWORD = 'input[class*="_2GBWeup5cttgBtW8FM3tfx"][type="password"], input._2GBWeup5cttgBtW8FM3tfx[type="password"]'
+SELECTOR_SUBMIT_BTN = 'button.DjSvCZoKKfoNSmarsEcTS[type="submit"], button[type="submit"]:has-text("Sign in")'
+
+SELECTOR_ACCOUNT_PULLDOWN = '#account_pulldown'
+SELECTOR_ACCOUNT_NAME = 'span.account_name'
+SELECTOR_CHANGE_EMAIL_LINK = 'a.account_manage_link[href*="HelpChangeEmail"]'
+SELECTOR_VERIFICATION_CODE_INPUT = '#forgot_login_code, input[name="code"]'
 
 # ==============================================================================
 # 1. IMAP & REAL WEBMAIL CODE EXTRACTORS
@@ -174,63 +189,64 @@ class AutomationRunner:
         try:
             os.makedirs("./artifacts/screenshots", exist_ok=True)
             
-            # Step 1: Open Steam Login Page directly
+            # Step 1: Open Steam Login Page
             logger.info("[STEP 1] Opening Steam Direct Login Portal...")
             await page.goto("https://store.steampowered.com/login/", wait_until="domcontentloaded")
             await asyncio.sleep(2)
 
-            # Step 2: Target strictly inside the Sign-In Card containing text "SIGN IN WITH ACCOUNT NAME"
-            logger.info("[STEP 2] Scoping central card containing 'SIGN IN WITH ACCOUNT NAME'...")
-            
-            # Find the card containing the exact text seen in Screenshot 2
-            login_card = page.locator('div:has-text("SIGN IN WITH ACCOUNT NAME")').last
-            await login_card.wait_for(state="visible", timeout=15000)
-
-            # Locate text and password inputs STRICTLY INSIDE this central card
-            user_input = login_card.locator('input[type="text"]').first
-            pass_input = login_card.locator('input[type="password"]').first
-
-            # Fill Username
-            await user_input.click()
-            await user_input.fill("")
-            await user_input.fill(str(steam_user))
-            await asyncio.sleep(1)
-
-            # Fill Password
-            await pass_input.click()
-            await pass_input.fill("")
-            await pass_input.fill(str(steam_pass))
-            await asyncio.sleep(1)
-
-            # Capture Screenshot BEFORE Submit to visually verify text sitting inside SIGN IN WITH ACCOUNT NAME box!
-            await page.screenshot(path="./artifacts/screenshots/steam.png")
-            logger.info("[VISUAL] Verified inputs sitting inside central Sign-In box!")
-
-            # Step 3: Click the blue "Sign in" button inside this card
-            logger.info("[STEP 3] Submitting login via Sign in button...")
-            submit_btn = login_card.locator('button:has-text("Sign in"), button[type="submit"]').first
-            await submit_btn.click()
-            await asyncio.sleep(5)
-
-            # Save Screenshot AFTER submit
+            # Capture initial screenshot immediately so http://13.61.178.211:8000/screenshots/steam.png always loads!
             await page.screenshot(path="./artifacts/screenshots/steam.png")
 
-            # Step 4: Fetch Verification Code from Email
-            logger.info("[STEP 4] Fetching Steam Guard code...")
+            # Check if user is already logged in via #account_pulldown
+            if await page.is_visible(SELECTOR_ACCOUNT_PULLDOWN):
+                logger.info(f"[ACTIVE-SESSION] Account already logged in on session!")
+            else:
+                # Step 2: Fill Username using exact class _2GBWeup5cttgBtW8FM3tfx
+                logger.info(f"[STEP 2] Filling username into {SELECTOR_USERNAME}...")
+                user_input = await page.wait_for_selector(SELECTOR_USERNAME, timeout=15000)
+                await user_input.click()
+                await user_input.fill(str(steam_user))
+                await asyncio.sleep(1)
+
+                # Step 3: Fill Password using exact class _2GBWeup5cttgBtW8FM3tfx
+                logger.info(f"[STEP 3] Filling password into {SELECTOR_PASSWORD}...")
+                pass_input = await page.wait_for_selector(SELECTOR_PASSWORD, timeout=15000)
+                await pass_input.click()
+                await pass_input.fill(str(steam_pass))
+                await asyncio.sleep(1)
+
+                # Capture screenshot after typing credentials
+                await page.screenshot(path="./artifacts/screenshots/steam.png")
+
+                # Step 4: Click Sign in Button using exact class DjSvCZoKKfoNSmarsEcTS
+                logger.info(f"[STEP 4] Clicking Sign In button ({SELECTOR_SUBMIT_BTN})...")
+                submit_btn = await page.wait_for_selector(SELECTOR_SUBMIT_BTN, timeout=10000)
+                await submit_btn.click()
+                await asyncio.sleep(5)
+
+                # Capture screenshot after login submit
+                await page.screenshot(path="./artifacts/screenshots/steam.png")
+
+            # Step 5: Fetch Verification Code from Email
+            logger.info("[STEP 5] Fetching Steam Guard / Email Verification code...")
             code = await get_steam_code(page, str(email_addr), str(email_pass))
             
             if not code:
                 raise Exception("Failed to retrieve verification code from email.")
                 
-            logger.info(f"[STEP 5] Verification Code Extracted Successfully: {code}")
+            logger.info(f"[STEP 6] Verification Code Extracted Successfully: {code}")
 
-            # Step 5: Input Verification Code
-            guard_input = await page.wait_for_selector('input[type="text"]', timeout=10000)
-            if guard_input:
-                await guard_input.focus()
-                await guard_input.fill(code, force=True)
-                await page.keyboard.press("Enter")
-                logger.info("[STEP 6] Code submitted to Steam Guard!")
+            # Step 6: Input Verification Code into #forgot_login_code if present, or generic Guard prompt
+            logger.info("[STEP 7] Submitting code to Steam input field...")
+            guard_input = page.locator(SELECTOR_VERIFICATION_CODE_INPUT).first
+            if not await guard_input.is_visible():
+                guard_input = page.locator('input[type="text"]').first
+                
+            await guard_input.wait_for(state="visible", timeout=10000)
+            await guard_input.focus()
+            await guard_input.fill(code, force=True)
+            await page.keyboard.press("Enter")
+            logger.info("[STEP 8] Verification code submitted successfully!")
 
             await page.screenshot(path="./artifacts/screenshots/steam_success.png")
             return {"status": "success", "code": code}
