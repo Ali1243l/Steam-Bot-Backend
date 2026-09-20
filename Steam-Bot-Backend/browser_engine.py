@@ -1,6 +1,6 @@
 """
 browser_engine.py - Hybrid Thread-Safe IMAP & Stealth Playwright Automation Engine
-Flexible argument handling for AutomationRunner.execute_task to prevent signature mismatch.
+Auto-detects Microsoft Basic Auth restrictions and seamlessly falls back to Playwright Webmail Extraction.
 """
 
 import re
@@ -31,9 +31,13 @@ STEALTH_ARGS = [
 ]
 
 # ==============================================================================
-# METHOD 1: Thread-Safe Synchronous IMAP Extraction
+# METHOD 1: Thread-Safe Synchronous IMAP Extraction (With Fast Bypass)
 # ==============================================================================
-def _fetch_code_via_imap_sync(email_address: str, email_password: str, timeout: int = 45) -> Optional[str]:
+def _fetch_code_via_imap_sync(email_address: str, email_password: str, timeout: int = 15) -> Optional[str]:
+    if not email_address or email_address == "None":
+        logger.warning("[IMAP-ENGINE] Invalid or empty email address provided.")
+        return None
+
     logger.info(f"[IMAP-ENGINE] Attempting direct IMAP connection to outlook.office365.com for: {email_address}")
     start_time = time.time()
     
@@ -75,55 +79,68 @@ def _fetch_code_via_imap_sync(email_address: str, email_password: str, timeout: 
             except Exception:
                 pass
         except Exception as e:
-            logger.warning(f"[IMAP-ENGINE] IMAP Attempt failed ({e}). Retrying in 3s...")
+            err_msg = str(e)
+            logger.warning(f"[IMAP-ENGINE] IMAP Attempt notice: {err_msg}")
+            # If Microsoft disabled Basic Auth, break immediately to trigger Browser Fallback!
+            if "Basic authentication is disabled" in err_msg or "AUTHENTICATIONFAILED" in err_msg:
+                logger.error("[IMAP-ENGINE] Microsoft Basic Auth is disabled for this account. Switching to Browser Webmail Extraction...")
+                return "AUTH_DISABLED"
         
-        time.sleep(3)
+        time.sleep(2)
         
-    logger.error(f"[IMAP-ENGINE] Timed out waiting for email code for {email_address}")
+    logger.error(f"[IMAP-ENGINE] Timed out waiting for IMAP code for {email_address}")
     return None
 
 
-async def fetch_code_via_imap(email_address: str, email_password: str, timeout: int = 45) -> Optional[str]:
+async def fetch_code_via_imap(email_address: str, email_password: str, timeout: int = 15) -> Optional[str]:
     return await asyncio.to_thread(_fetch_code_via_imap_sync, email_address, email_password, timeout)
 
 
 async def fetch_code_via_browser_fallback(page: Page, email_address: str, email_password: str) -> Optional[str]:
-    logger.info(f"[BROWSER-FALLBACK] Attempting webmail login for {email_address}...")
+    logger.info(f"[BROWSER-FALLBACK] Navigating directly to Outlook Webmail for {email_address}...")
     try:
         mail_page = await page.context.new_page()
         await mail_page.goto("https://outlook.live.com/owa/?nlp=1", wait_until="networkidle")
         
+        # Email Input
         await mail_page.fill('input[type="email"]', email_address)
         await mail_page.click('input[type="submit"]')
         await asyncio.sleep(2)
         
+        # Password Input
         await mail_page.fill('input[type="password"]', email_password)
         await mail_page.click('input[type="submit"]')
         await asyncio.sleep(3)
         
+        # Handle 'Stay signed in?' prompt
         if await mail_page.is_visible('input[id="acceptButton"]'):
             await mail_page.click('input[id="acceptButton"]')
             
         await asyncio.sleep(5)
         
+        # Extract Verification Code from Inbox UI
         content = await mail_page.content()
-        match = re.search(r'Steam\s*Verification\s*Code[:\s]*([A-Z0-9]{5})', content, re.IGNORECASE)
+        match = re.search(r'\b([A-Z0-9]{5})\b', content)
         await mail_page.close()
         
         if match:
-            return match.group(1)
+            code = match.group(1)
+            logger.info(f"[BROWSER-FALLBACK] Code extracted via Webmail UI: {code}")
+            return code
     except Exception as e:
-        logger.error(f"[BROWSER-FALLBACK] Failed webmail fallback: {e}")
+        logger.error(f"[BROWSER-FALLBACK] Webmail extraction error: {e}")
     return None
 
 
 async def smart_get_verification_code(page: Page, email_address: str, email_password: str) -> Optional[str]:
     logger.info("[SMART-DISPATCHER] Requesting verification code...")
-    code = await fetch_code_via_imap(email_address, email_password, timeout=30)
-    if code:
+    
+    code = await fetch_code_via_imap(email_address, email_password, timeout=10)
+    
+    if code and code != "AUTH_DISABLED":
         return code
         
-    logger.warning("[SMART-DISPATCHER] IMAP method yielded no result. Escalating to Browser Fallback...")
+    logger.warning("[SMART-DISPATCHER] Direct IMAP unavailable. Executing Browser Webmail Extraction...")
     return await fetch_code_via_browser_fallback(page, email_address, email_password)
 
 
@@ -165,32 +182,41 @@ class AutomationRunner:
             await self.playwright.stop()
 
     async def execute_task(self, *args, **kwargs) -> Dict[str, Any]:
-        """
-        Flexible task executor accepting positional/keyword arguments 
-        passed from main.py without raising positional argument mismatch exceptions.
-        """
-        # Extract payload/task_data flexibly from args or kwargs
+        """Flexible task executor supporting multi-key payload lookups."""
         task_data = {}
         target_email = None
 
-        if len(args) > 0:
-            if isinstance(args[0], dict):
-                task_data = args[0]
-            if len(args) > 1 and isinstance(args[1], str):
-                target_email = args[1]
-            elif len(args) > 1 and isinstance(args[1], dict):
-                task_data.update(args[1])
-                
+        # Parse args dynamically
+        for arg in args:
+            if isinstance(arg, dict):
+                task_data.update(arg)
+            elif isinstance(arg, str):
+                target_email = arg
+
         if kwargs:
             task_data.update(kwargs)
 
         page = await self.context.new_page()
         try:
-            steam_user = task_data.get("username") or task_data.get("steam_username")
+            # Flexible field extraction for Supabase schemas
+            steam_user = task_data.get("username") or task_data.get("steam_username") or task_data.get("login")
             steam_pass = task_data.get("password") or task_data.get("steam_password")
-            email_addr = task_data.get("email") or task_data.get("current_email")
-            email_pass = task_data.get("email_password") or task_data.get("current_email_password")
-            dest_email = target_email or task_data.get("target_email")
+            
+            email_addr = (
+                task_data.get("email") or 
+                task_data.get("current_email") or 
+                task_data.get("mail") or 
+                task_data.get("outlook_email")
+            )
+            
+            email_pass = (
+                task_data.get("email_password") or 
+                task_data.get("current_email_password") or 
+                task_data.get("mail_password") or 
+                task_data.get("outlook_password")
+            )
+            
+            dest_email = target_email or task_data.get("target_email") or task_data.get("new_email")
 
             logger.info(f"[STEALTH-RUNNER] Executing workflow for user: (Mail: {email_addr}) -> Target: {dest_email}")
             
@@ -198,13 +224,12 @@ class AutomationRunner:
             logger.info("[STEP 1] Navigating to Steam login...")
             await page.goto("https://store.steampowered.com/login/", wait_until="networkidle")
             
-            # Step 2: Login Flow
             logger.info("[STEP 2] Login submitted. Navigating to account settings...")
             logger.info("[STEP 3] Triggered verification code email from Steam.")
             logger.info("[STEP 4] Fetching verification code via IMAP / Smart Dispatcher...")
             
-            # Fetch Verification Code
-            code = await smart_get_verification_code(page, email_addr, email_pass)
+            # Fetch Code via Smart Dispatcher (Auto Fallback)
+            code = await smart_get_verification_code(page, str(email_addr), str(email_pass))
             
             if not code:
                 raise Exception("Failed to retrieve verification code from email.")
