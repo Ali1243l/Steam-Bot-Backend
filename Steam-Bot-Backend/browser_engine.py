@@ -1,6 +1,6 @@
 """
-browser_engine.py - Precision Scoped Steam Login Engine
-Clicks top-right 'sign in' header link and targets the mounted login dialog exclusively.
+browser_engine.py - Full Desktop Viewport Engine
+Sets browser resolution to 1920x1080 to prevent responsive UI hidden element timeouts.
 """
 
 import re
@@ -134,115 +134,12 @@ class AutomationRunner:
             launch_opts["proxy"] = {"server": self.proxy_url}
             
         self.browser = await self.playwright.chromium.launch(**launch_opts)
+        # Forced Full HD Desktop Viewport (1920x1080) to prevent responsive hidden elements
         self.context = await self.browser.new_context(
-            viewport={"width": 1280, "height": 720},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            viewport={"width": 1920, "height": 1080},
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         )
-        logger.info("[AUTOMATION] Warm browser initialized.")
+        logger.info("[AUTOMATION] Warm browser initialized with 1920x1080 Desktop Viewport.")
 
     async def cleanup(self):
-        if self.context: await self.context.close()
-        if self.browser: await self.browser.close()
-        if self.playwright: await self.playwright.stop()
-
-    async def execute_task(self, *args, **kwargs) -> Dict[str, Any]:
-        payload = {}
-        for arg in args:
-            if isinstance(arg, dict): payload.update(arg)
-        if kwargs: payload.update(kwargs)
-
-        steam_user = payload.get("steam_username") or payload.get("username")
-        steam_pass = payload.get("steam_password") or payload.get("password")
-        
-        email_addr = (
-            payload.get("original_email") or 
-            payload.get("email") or 
-            payload.get("current_email")
-        )
-        email_pass = (
-            payload.get("email_password") or 
-            payload.get("current_email_password")
-        )
-        target_email = payload.get("target_email") or payload.get("new_email")
-
-        logger.info(f"[TASK-EXECUTION] Logging into Steam: {steam_user} | Mail: {email_addr}")
-
-        if not email_addr or str(email_addr).strip() == "None":
-            raise ValueError("ERR_MISSING_EMAIL: Email field is empty.")
-
-        page = await self.context.new_page()
-        try:
-            os.makedirs("./artifacts/screenshots", exist_ok=True)
-            
-            # Step 1: Open Steam Store Homepage
-            logger.info("[STEP 1] Opening Steam Homepage...")
-            await page.goto("https://store.steampowered.com/", wait_until="domcontentloaded")
-            await asyncio.sleep(2)
-
-            # Step 2: Click the 'sign in' button in the top right header (as seen in screenshot!)
-            logger.info("[STEP 2] Clicking top-right 'sign in' header button...")
-            signin_link = page.locator('a.global_action_link, a[href*="login"]').first
-            await signin_link.wait_for(state="visible", timeout=10000)
-            await signin_link.click(force=True)
-            await asyncio.sleep(3)
-
-            # Save Screenshot of Opened Login Card
-            await page.screenshot(path="./artifacts/screenshots/steam.png")
-
-            # Step 3: Target inputs inside the Login Card exclusively
-            logger.info("[STEP 3] Target inputs inside the open login dialog...")
-            
-            # Scoped container for login form
-            login_form = page.locator('form, div._2GB2i2y3_9yP6Rk33O7P3m, div.new_login_dialog').first
-            await login_form.wait_for(state="visible", timeout=15000)
-
-            user_input = login_form.locator('input[type="text"]').first
-            pass_input = login_form.locator('input[type="password"]').first
-
-            # Fill Username
-            await user_input.focus()
-            await user_input.fill(str(steam_user), force=True)
-            await asyncio.sleep(1)
-
-            # Fill Password
-            await pass_input.focus()
-            await pass_input.fill(str(steam_pass), force=True)
-            await asyncio.sleep(1)
-
-            # Submit Login Form
-            logger.info("[STEP 4] Submitting login form...")
-            submit_btn = login_form.locator('button[type="submit"]').first
-            await submit_btn.click(force=True)
-            await asyncio.sleep(5)
-
-            # Update Screenshot after submission
-            await page.screenshot(path="./artifacts/screenshots/steam.png")
-
-            # Step 5: Fetch Verification Code from Email
-            logger.info("[STEP 5] Fetching Steam Guard code...")
-            code = await get_steam_code(page, str(email_addr), str(email_pass))
-            
-            if not code:
-                raise Exception("Failed to retrieve verification code from email.")
-                
-            logger.info(f"[STEP 6] Verification Code Extracted Successfully: {code}")
-
-            # Step 6: Input Verification Code
-            guard_input = await page.wait_for_selector('input[type="text"]', timeout=10000)
-            if guard_input:
-                await guard_input.focus()
-                await guard_input.fill(code, force=True)
-                await page.keyboard.press("Enter")
-                logger.info("[STEP 7] Code submitted to Steam Guard!")
-
-            await page.screenshot(path="./artifacts/screenshots/steam_success.png")
-            return {"status": "success", "code": code}
-
-        except Exception as e:
-            logger.error(f"[PIPELINE-ERROR] Task execution failed: {e}")
-            try:
-                await page.screenshot(path="./artifacts/screenshots/error_.png")
-            except Exception: pass
-            raise e
-        finally:
-            await page.close()
+        if self.c
