@@ -78,72 +78,49 @@ async def execute_task_pipeline(
     target_contact: str,
     sender_filter: str,
 ) -> None:
-    """
-    Background worker that runs the full automation sequence:
-    1. Mark account as 'reserved'
-    2. Poll for verification token via IMAP (non-blocking thread)
-    3. Launch browser runner and execute form submission
-    4. Update account state in Supabase ('used' or 'error')
-    """
     supabase = get_supabase_client()
     logger.info(f"[PIPELINE:START] Beginning pipeline for record ID: {record_id}")
 
     try:
-        # Step 1: Set state to 'reserved' to avoid race conditions with other workers
+        # Step 1: تحديث حالة الحساب إلى قيد المعالجة (محجوز)
         supabase.table("stock_accounts").update({
-            "status": "reserved",
+            "status": "processing",
             "updated_at": datetime.utcnow().isoformat()
         }).eq("id", record_id).execute()
 
-        email_user = account_data.get("original_email")
-        email_pass = account_data.get("email_password") or account_data.get("steam_password")
-
-        if not email_user or not email_pass:
-            raise ValueError(f"Record {record_id} lacks valid email credentials.")
-
-        # Step 2: Fetch verification token using the IMAP helper in a separate thread
-        logger.info(f"[PIPELINE:IMAP] Querying {IMAP_HOST} for incoming verification code...")
-        verification_token = await asyncio.to_thread(
-            fetch_verification_code,
-            email_address=email_user,
-            password=email_pass,
-            imap_server=IMAP_HOST,
-            sender_filter=sender_filter,
-            timeout_seconds=30,
-        )
-
-        if not verification_token:
-            raise RuntimeError(f"Failed to obtain verification token for {email_user}.")
-
-        # Step 3: Initialize browser automation and execute form update
-        logger.info(f"[PIPELINE:BROWSER] Token acquired: {verification_token}. Launching browser...")
         runner = AutomationRunner()
-        workflow_success = await runner.execute_form_flow(
-            target_url=TARGET_DASHBOARD_URL,
-            verification_token=verification_token,
-            new_contact_value=target_contact,
-        )
+        
+        task_payload = {
+            "account_identifier": account_data.get("steam_username"),
+            "account_secret": account_data.get("steam_password"),
+            "original_email": account_data.get("original_email"),
+            "email_password": account_data.get("email_password"),
+            "target_contact": target_contact
+        }
 
-        if not workflow_success:
-            raise RuntimeError("Browser workflow execution reported failure.")
+        # Step 2: تشغيل المتصفح لتنفيذ الدخول واستخراج الكود وتغيير الإيميل
+        await runner.execute_task(TARGET_DASHBOARD_URL, task_payload)
 
-        # Step 4: Finalize account state as 'used'
+        # Step 3: تحديث الحساب إلى مستخدم بعد النجاح
         logger.info(f"[PIPELINE:COMPLETE] Successfully processed task. Marking record {record_id} as 'used'.")
         supabase.table("stock_accounts").update({
             "status": "used",
-            "updated_at": datetime.utcnow().isoformat(),
+            "assigned_game": "Email Updated",
+            "updated_at": datetime.utcnow().isoformat()
         }).eq("id", record_id).execute()
 
     except Exception as exc:
         logger.error(f"[PIPELINE:ERROR] Task execution failed for record {record_id}: {exc}")
-        # Reset or mark error state so inventory remains auditable
         try:
             supabase.table("stock_accounts").update({
-                "status": "error",
-                "updated_at": datetime.utcnow().isoformat(),
+                "status": "available",
+                "updated_at": datetime.utcnow().isoformat()
             }).eq("id", record_id).execute()
         except Exception as update_err:
             logger.error(f"[SUPABASE:FAIL] Could not set error status: {update_err}")
+    finally:
+        if 'runner' in locals():
+            await runner.close()
 
 
 @app.post("/api/process-task", response_model=TaskResponse, status_code=status.HTTP_202_ACCEPTED)
