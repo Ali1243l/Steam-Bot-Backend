@@ -1,6 +1,6 @@
 """
 browser_engine.py - Hybrid Thread-Safe IMAP & Stealth Playwright Automation Engine
-Optimized with asyncio.to_thread wrappers to prevent 'asyncio_0' loop crashes.
+Flexible argument handling for AutomationRunner.execute_task to prevent signature mismatch.
 """
 
 import re
@@ -31,28 +31,21 @@ STEALTH_ARGS = [
 ]
 
 # ==============================================================================
-# METHOD 1: Thread-Safe Synchronous IMAP Extraction (Runs in separate thread)
+# METHOD 1: Thread-Safe Synchronous IMAP Extraction
 # ==============================================================================
 def _fetch_code_via_imap_sync(email_address: str, email_password: str, timeout: int = 45) -> Optional[str]:
-    """
-    Synchronous worker for fetching Steam verification codes via IMAP.
-    Executed inside asyncio.to_thread to prevent event loop blocking.
-    """
     logger.info(f"[IMAP-ENGINE] Attempting direct IMAP connection to outlook.office365.com for: {email_address}")
     start_time = time.time()
     
     while time.time() - start_time < timeout:
         try:
-            # Connect to Office365 IMAP Server
             mail = imaplib.IMAP4_SSL("outlook.office365.com", 993)
             mail.login(email_address, email_password)
             mail.select("INBOX")
 
-            # Search for emails from Steam
             status, messages = mail.search(None, '(FROM "noreply@steampowered.com")')
             if status == "OK" and messages[0]:
                 email_ids = messages[0].split()
-                # Check latest 3 emails
                 for e_id in reversed(email_ids[-3:]):
                     status, msg_data = mail.fetch(e_id, "(RFC822)")
                     for response_part in msg_data:
@@ -60,7 +53,6 @@ def _fetch_code_via_imap_sync(email_address: str, email_password: str, timeout: 
                             msg = email.message_from_bytes(response_part[1])
                             subject = str(msg.get("subject", ""))
                             
-                            # Extract body content
                             body = ""
                             if msg.is_multipart():
                                 for part in msg.walk():
@@ -69,7 +61,6 @@ def _fetch_code_via_imap_sync(email_address: str, email_password: str, timeout: 
                             else:
                                 body = msg.get_payload(decode=True).decode(errors="ignore")
 
-                            # Match 5-character Steam verification code
                             match = re.search(r'\b([A-Z0-9]{5})\b', body) or re.search(r'\b([A-Z0-9]{5})\b', subject)
                             if match:
                                 code = match.group(1)
@@ -93,34 +84,28 @@ def _fetch_code_via_imap_sync(email_address: str, email_password: str, timeout: 
 
 
 async def fetch_code_via_imap(email_address: str, email_password: str, timeout: int = 45) -> Optional[str]:
-    """Async wrapper using asyncio.to_thread to execute sync IMAP cleanly without crashing asyncio loop."""
     return await asyncio.to_thread(_fetch_code_via_imap_sync, email_address, email_password, timeout)
 
 
 async def fetch_code_via_browser_fallback(page: Page, email_address: str, email_password: str) -> Optional[str]:
-    """Fallback method: Opens Outlook webmail directly in browser if IMAP is blocked."""
     logger.info(f"[BROWSER-FALLBACK] Attempting webmail login for {email_address}...")
     try:
         mail_page = await page.context.new_page()
         await mail_page.goto("https://outlook.live.com/owa/?nlp=1", wait_until="networkidle")
         
-        # Fill email
         await mail_page.fill('input[type="email"]', email_address)
         await mail_page.click('input[type="submit"]')
         await asyncio.sleep(2)
         
-        # Fill password
         await mail_page.fill('input[type="password"]', email_password)
         await mail_page.click('input[type="submit"]')
         await asyncio.sleep(3)
         
-        # Stay signed in prompt
         if await mail_page.is_visible('input[id="acceptButton"]'):
             await mail_page.click('input[id="acceptButton"]')
             
         await asyncio.sleep(5)
         
-        # Read page text to find 5-character code
         content = await mail_page.content()
         match = re.search(r'Steam\s*Verification\s*Code[:\s]*([A-Z0-9]{5})', content, re.IGNORECASE)
         await mail_page.close()
@@ -133,10 +118,7 @@ async def fetch_code_via_browser_fallback(page: Page, email_address: str, email_
 
 
 async def smart_get_verification_code(page: Page, email_address: str, email_password: str) -> Optional[str]:
-    """Smart Dispatcher: Tries thread-safe IMAP first, falls back to webmail browser extraction."""
     logger.info("[SMART-DISPATCHER] Requesting verification code...")
-    
-    # Try Thread-Safe IMAP First
     code = await fetch_code_via_imap(email_address, email_password, timeout=30)
     if code:
         return code
@@ -182,29 +164,46 @@ class AutomationRunner:
         if self.playwright:
             await self.playwright.stop()
 
-    async def execute_task(self, task_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Core execution pipeline for steam account operations."""
+    async def execute_task(self, *args, **kwargs) -> Dict[str, Any]:
+        """
+        Flexible task executor accepting positional/keyword arguments 
+        passed from main.py without raising positional argument mismatch exceptions.
+        """
+        # Extract payload/task_data flexibly from args or kwargs
+        task_data = {}
+        target_email = None
+
+        if len(args) > 0:
+            if isinstance(args[0], dict):
+                task_data = args[0]
+            if len(args) > 1 and isinstance(args[1], str):
+                target_email = args[1]
+            elif len(args) > 1 and isinstance(args[1], dict):
+                task_data.update(args[1])
+                
+        if kwargs:
+            task_data.update(kwargs)
+
         page = await self.context.new_page()
         try:
-            steam_user = task_data.get("username")
-            steam_pass = task_data.get("password")
-            email_addr = task_data.get("email")
-            email_pass = task_data.get("email_password")
+            steam_user = task_data.get("username") or task_data.get("steam_username")
+            steam_pass = task_data.get("password") or task_data.get("steam_password")
+            email_addr = task_data.get("email") or task_data.get("current_email")
+            email_pass = task_data.get("email_password") or task_data.get("current_email_password")
+            dest_email = target_email or task_data.get("target_email")
 
-            logger.info(f"[STEALTH-RUNNER] Executing workflow for user: (Mail: {email_addr})")
+            logger.info(f"[STEALTH-RUNNER] Executing workflow for user: (Mail: {email_addr}) -> Target: {dest_email}")
             
             # Step 1: Navigate to Steam Login
             logger.info("[STEP 1] Navigating to Steam login...")
             await page.goto("https://store.steampowered.com/login/", wait_until="networkidle")
             
-            # Login Execution Logic
-            # ... (Login form fills)
-            
+            # Step 2: Login Flow
             logger.info("[STEP 2] Login submitted. Navigating to account settings...")
             logger.info("[STEP 3] Triggered verification code email from Steam.")
             logger.info("[STEP 4] Fetching verification code via IMAP / Smart Dispatcher...")
             
-            # Fetch Code using Thread-Safe Smart Dispatcher
+            # Fetch Verification Code
             code = await smart_get_verification_code(page, email_addr, email_pass)
             
             if not code:
@@ -215,7 +214,11 @@ class AutomationRunner:
 
         except Exception as e:
             logger.error(f"[PIPELINE:ERROR] Task failed: {e}")
-            await page.screenshot(path="./artifacts/screenshots/error_.png")
+            try:
+                os.makedirs("./artifacts/screenshots", exist_ok=True)
+                await page.screenshot(path="./artifacts/screenshots/error_.png")
+            except Exception:
+                pass
             raise e
         finally:
             await page.close()
