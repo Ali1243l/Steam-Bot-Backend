@@ -41,17 +41,36 @@ class AutomationRunner:
             await page.goto("https://store.steampowered.com/login/", wait_until="networkidle", timeout=30000)
 
             # 1. إدخال بيانات ستيم بالمحددات الدقيقة
-            await page.wait_for_selector("input#input_username", timeout=15000)
-            await page.fill("input#input_username", steam_user)
+            logger.info(f"Logging into Steam for user: {steam_user}")
+            await page.goto("https://store.steampowered.com/login/", wait_until="domcontentloaded", timeout=45000)
+            
+            # انتظار ظهور أي حقل نصي لتسجيل الدخول
+            username_selector = "input#input_username, input[type='text']:visible, input[name='username']"
+            await page.wait_for_selector(username_selector, timeout=30000)
+            
+            # تعبئة اسم المستخدم
+            user_input = await page.query_selector(username_selector)
+            if user_input:
+                await user_input.click()
+                await user_input.fill("")
+                await page.keyboard.type(steam_user, delay=50)
 
-            await page.wait_for_selector("input#input_password", timeout=15000)
-            await page.fill("input#input_password", steam_pass)
+            # تعبئة كلمة المرور
+            password_selector = "input#input_password, input[type='password']:visible, input[name='password']"
+            await page.wait_for_selector(password_selector, timeout=15000)
+            pwd_input = await page.query_selector(password_selector)
+            if pwd_input:
+                await pwd_input.click()
+                await pwd_input.fill("")
+                await page.keyboard.type(steam_pass, delay=50)
 
-            await page.click("button[type='submit']")
+            # الضغط على زر تسجيل الدخول
+            submit_btn = await page.wait_for_selector("button[type='submit'], .btn_blue_steamui, button:has-text('Sign In'), button:has-text('Log in')", timeout=15000)
+            if submit_btn:
+                await submit_btn.click()
 
-            # انتظار تسجيل الدخول
-            await page.wait_for_timeout(7000)
-
+            # مهلة للتأكد من نجاح جلسة تسجيل الدخول
+            await page.wait_for_timeout(8000)
             # 2. التوجه لرابط تغيير الإيميل
             logger.info("Navigating to Steam Change Email wizard...")
             await page.goto("https://help.steampowered.com/en/wizard/HelpChangeEmail/", wait_until="networkidle", timeout=30000)
