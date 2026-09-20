@@ -1,5 +1,6 @@
 """
-browser_engine.py - Anti-Bot Stealth Engine for AWS / Cloud Instances
+browser_engine.py - Smart Multi-Provider Anti-Bot Engine for AWS
+Dynamically routes verification requests based on Email Domain (@outlook.com, @hotmail.com, @fjqtabk.icu, etc.)
 """
 
 import re
@@ -12,7 +13,6 @@ from playwright.async_api import async_playwright, BrowserContext, Page, Timeout
 logger = logging.getLogger("browser_engine")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-# خيارات متصفح متقدمة لتجاوز كشف AWS EC2 Data Center IPs
 STEALTH_ARGS = [
     "--no-sandbox",
     "--disable-setuid-sandbox",
@@ -27,8 +27,83 @@ STEALTH_ARGS = [
 ]
 
 
+def detect_email_provider(email: str) -> str:
+    """الخوارزمية الذكية: فحص دومين الإيميل وتحديد المزود تلقائياً"""
+    if not email or "@" not in email:
+        return "xomail"
+    domain = email.split("@")[-1].lower().strip()
+    microsoft_domains = ["outlook.com", "hotmail.com", "live.com", "msn.com", "passport.com"]
+    if any(domain.endswith(d) for d in microsoft_domains):
+        return "outlook"
+    return "xomail"
+
+
+async def fetch_code_from_outlook(context: BrowserContext, email: str, password: str, timeout_seconds: int = 60) -> str:
+    """محرك مخصص لتسجيل الدخول إلى Outlook و Hotmail واستخراج الرمز"""
+    logger.info(f"[OUTLOOK-ENGINE] Opening tab for Microsoft Outlook login: {email}")
+    page = await context.new_page()
+
+    try:
+        # 1. فتح صفحة تسجيل الدخول لـ Microsoft Outlook
+        await page.goto("https://login.live.com/", wait_until="domcontentloaded", timeout=30000)
+        await page.wait_for_timeout(2000)
+
+        # كتابة ايميل Outlook
+        email_input = await page.wait_for_selector('input[type="email"], input[name="loginfmt"]', timeout=20000)
+        await email_input.fill(email)
+        
+        next_btn = await page.query_selector('input[type="submit"], #idSIButton9')
+        if next_btn:
+            await next_btn.click()
+            await page.wait_for_timeout(2500)
+
+        # كتابة الباسورد
+        pass_input = await page.wait_for_selector('input[type="password"], input[name="passwd"]', timeout=20000)
+        await pass_input.fill(password)
+
+        signin_btn = await page.query_selector('input[type="submit"], #idSIButton9, button[type="submit"]')
+        if signin_btn:
+            await signin_btn.click()
+            await page.wait_for_timeout(3000)
+
+        # تخطي سؤال الإبقاء على تسجيل الدخول Stay signed in
+        stay_signed_btn = await page.query_selector('#idSIButton9, input[value="Yes"], button:has-text("Yes"), #idBtn_Back')
+        if stay_signed_btn:
+            await stay_signed_btn.click()
+            await page.wait_for_timeout(3000)
+
+        # 2. الانتقال لصندوق الوارد لـ Outlook
+        await page.goto("https://outlook.live.com/mail/0/inbox", wait_until="domcontentloaded", timeout=30000)
+        logger.info("[OUTLOOK-ENGINE] Polling Outlook inbox for verification code...")
+
+        start_time = asyncio.get_event_loop().time()
+        while (asyncio.get_event_loop().time() - start_time) < timeout_seconds:
+            page_text = await page.content()
+            
+            # البحث عن رمز مكون من 5 خانات
+            match = re.search(r'\b[A-Z0-9]{5}\b', page_text)
+            if match:
+                code = match.group(0)
+                logger.info(f"[OUTLOOK-ENGINE] Code successfully extracted: {code}")
+                return code
+
+            # فتح أول رسالة إيميل في القائمة
+            messages = await page.query_selector_all('div[role="option"], div[data-convid], div.customGroupHeader')
+            if messages:
+                await messages[0].click()
+                await page.wait_for_timeout(2000)
+
+            await asyncio.sleep(4)
+
+        raise TimeoutError(f"Outlook verification email timeout after {timeout_seconds}s")
+
+    finally:
+        await page.close()
+
+
 async def fetch_code_from_xomail(context: BrowserContext, email: str, password: str, timeout_seconds: int = 60) -> str:
-    logger.info(f"[WEBMAIL] Opening secondary tab for: {email}")
+    """محرك مخصص لتسجيل الدخول إلى Roundcube Webmail (xomail.club)"""
+    logger.info(f"[XOMAIL-ENGINE] Opening secondary tab for Roundcube: {email}")
     webmail_page = await context.new_page()
 
     try:
@@ -43,7 +118,7 @@ async def fetch_code_from_xomail(context: BrowserContext, email: str, password: 
         while (asyncio.get_event_loop().time() - start_time) < timeout_seconds:
             messages = await webmail_page.query_selector_all("table#messagelist tr.message")
             if messages:
-                logger.info("[WEBMAIL] Found email message in inbox...")
+                logger.info("[XOMAIL-ENGINE] Found email message in inbox...")
                 await messages[0].click()
                 await webmail_page.wait_for_timeout(2000)
 
@@ -62,7 +137,7 @@ async def fetch_code_from_xomail(context: BrowserContext, email: str, password: 
                 match = re.search(r'\b[A-Z0-9]{5}\b', body_text)
                 if match:
                     code = match.group(0)
-                    logger.info(f"[WEBMAIL] Code extracted: {code}")
+                    logger.info(f"[XOMAIL-ENGINE] Code extracted: {code}")
                     return code
 
             refresh_btn = await webmail_page.query_selector("a.button.toolbar-button.refresh, #rcmbtn100")
@@ -71,10 +146,21 @@ async def fetch_code_from_xomail(context: BrowserContext, email: str, password: 
 
             await asyncio.sleep(3)
 
-        raise TimeoutError(f"Verification email timeout after {timeout_seconds}s")
+        raise TimeoutError(f"xomail verification email timeout after {timeout_seconds}s")
 
     finally:
         await webmail_page.close()
+
+
+async def smart_fetch_verification_code(context: BrowserContext, email: str, password: str, timeout_seconds: int = 60) -> str:
+    """الموزع الذكي: يوجه الطلب تلقائياً بناءً على نوع دومين الإيميل"""
+    provider = detect_email_provider(email)
+    logger.info(f"[SMART-ROUTER] Detected email provider '{provider}' for account: {email}")
+
+    if provider == "outlook":
+        return await fetch_code_from_outlook(context, email, password, timeout_seconds)
+    else:
+        return await fetch_code_from_xomail(context, email, password, timeout_seconds)
 
 
 class AutomationRunner:
@@ -96,13 +182,9 @@ class AutomationRunner:
             await self.playwright.stop()
 
     async def execute_task(self, *args, **kwargs) -> dict:
-        """
-        تستقبل البيانات بدون أي خطأ في عدد المتغيرات الممررة من main.py
-        """
         task_data = {}
         extra_target = None
 
-        # التعامل مع أية طريقة استدعاء ممررة من main.py
         if args:
             for arg in args:
                 if isinstance(arg, dict):
@@ -122,7 +204,7 @@ class AutomationRunner:
         email_pass = task_data.get("email_password", "")
         new_email = task_data.get("target_email") or task_data.get("target_contact") or extra_target or ""
 
-        logger.info(f"[STEALTH-RUNNER] Starting Steam automation for user: {steam_user}")
+        logger.info(f"[STEALTH-RUNNER] Starting Steam automation for user: {steam_user} (Email: {orig_email})")
 
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True, args=STEALTH_ARGS)
@@ -174,8 +256,8 @@ class AutomationRunner:
                     logger.info("[STEP 4] Requested verification code dispatch.")
                     await page.wait_for_timeout(3000)
 
-                logger.info("[STEP 5] Fetching code from xomail...")
-                verification_code = await fetch_code_from_xomail(
+                logger.info("[STEP 5] Smart Routing: Fetching code based on Email Provider...")
+                verification_code = await smart_fetch_verification_code(
                     context=context,
                     email=orig_email,
                     password=email_pass,
