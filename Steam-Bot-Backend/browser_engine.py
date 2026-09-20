@@ -85,24 +85,42 @@ class AutomationRunner:
         self.playwright = None
 
     async def initialize(self):
-        """الدالة المطلوبة بملف main.py عند بدء تشغيل السيرفر"""
         logger.info("[AUTOMATION] Warm browser runner initialized successfully.")
         return True
 
     async def cleanup(self):
-        """الدالة المطلوبة بملف main.py عند إغلاق السيرفر"""
         logger.info("[AUTOMATION] Cleaning up browser runner resources.")
         if self.browser:
             await self.browser.close()
         if self.playwright:
             await self.playwright.stop()
 
-    async def execute_task(self, task_data: dict) -> dict:
+    async def execute_task(self, *args, **kwargs) -> dict:
+        """
+        تستقبل البيانات بدون أي خطأ في عدد المتغيرات الممررة من main.py
+        """
+        task_data = {}
+        extra_target = None
+
+        # التعامل مع أية طريقة استدعاء ممررة من main.py
+        if args:
+            for arg in args:
+                if isinstance(arg, dict):
+                    task_data = arg
+                elif isinstance(arg, str):
+                    extra_target = arg
+
+        if kwargs:
+            if "task_data" in kwargs and isinstance(kwargs["task_data"], dict):
+                task_data = kwargs["task_data"]
+            else:
+                task_data.update(kwargs)
+
         steam_user = task_data.get("steam_username", "")
         steam_pass = task_data.get("steam_password", "")
         orig_email = task_data.get("original_email", "")
         email_pass = task_data.get("email_password", "")
-        new_email = task_data.get("target_email") or task_data.get("target_contact", "")
+        new_email = task_data.get("target_email") or task_data.get("target_contact") or extra_target or ""
 
         logger.info(f"[STEALTH-RUNNER] Starting Steam automation for user: {steam_user}")
 
