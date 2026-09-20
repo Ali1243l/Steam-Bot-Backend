@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from playwright.async_api import async_playwright
-from imap_helper import fetch_code_from_xomail
+from mail_extractor import fetch_code_from_xomail
 
 logger = logging.getLogger("orchestrator.browser")
 
