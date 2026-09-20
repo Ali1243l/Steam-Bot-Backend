@@ -1,6 +1,6 @@
 """
-browser_engine.py - Full Production Playwright Automation Engine
-Excludes store search inputs and targets precise Steam Login Form fields.
+browser_engine.py - Clean Standalone Portal Automation Engine
+Uses official login.steampowered.com portal (Zero store search bars, pure auth).
 """
 
 import re
@@ -71,7 +71,7 @@ async def fetch_code_via_browser(page: Page, email_addr: str, email_pass: str) -
     logger.info(f"[WEBMAIL-EXTRACTOR] Opening Outlook live browser for: {email_addr}")
     try:
         mail_page = await page.context.new_page()
-        await mail_page.goto("https://login.live.com/", wait_until="networkidle")
+        await mail_page.goto("https://outlook.live.com/owa/?nlp=1", wait_until="networkidle")
         
         email_selector = 'input[name="loginfmt"], input[type="email"], #i0116'
         await mail_page.wait_for_selector(email_selector, timeout=10000)
@@ -174,45 +174,31 @@ class AutomationRunner:
         try:
             os.makedirs("./artifacts/screenshots", exist_ok=True)
             
-            # Step 1: Open Steam Login Page
-            logger.info("[STEP 1] Opening Steam login page...")
-            await page.goto("https://store.steampowered.com/login/", wait_until="networkidle")
+            # Step 1: Open Standalone Pure Steam Login Portal (login.steampowered.com)
+            logger.info("[STEP 1] Opening Pure Standalone Steam Auth Portal (login.steampowered.com)...")
+            await page.goto("https://login.steampowered.com/", wait_until="networkidle")
             await asyncio.sleep(2)
 
-            # Dismiss Cookie Banner if visible
-            try:
-                cookie_btn = page.locator('#acceptAllButton, button:has-text("Accept All")').first
-                if await cookie_btn.is_visible():
-                    await cookie_btn.click(force=True)
-                    await asyncio.sleep(1)
-            except Exception: pass
-
-            # Step 2: Target PRECISE Login Form Inputs (Excluding top store search bar #store_nav_search_term)
-            logger.info("[STEP 2] Targeting precise Steam Sign-In form fields...")
+            # Step 2: Fill Username and Password directly on clean login card
+            logger.info("[STEP 2] Filling Steam credentials on pure auth card...")
             
-            # Select ONLY login username input (ignoring search bar)
-            user_input = page.locator('input[type="text"]:not(#store_nav_search_term)').first
+            user_input = page.locator('input[type="text"]').first
             pass_input = page.locator('input[type="password"]').first
 
-            # Fill Username
-            await user_input.scroll_into_view_if_needed()
-            await user_input.focus()
-            await user_input.fill(str(steam_user), force=True)
+            await user_input.wait_for(state="visible", timeout=10000)
+            await user_input.fill(str(steam_user))
             await asyncio.sleep(1)
 
-            # Fill Password
-            await pass_input.scroll_into_view_if_needed()
-            await pass_input.focus()
-            await pass_input.fill(str(steam_pass), force=True)
+            await pass_input.fill(str(steam_pass))
             await asyncio.sleep(1)
 
-            # Submit Form
+            # Step 3: Submit Login
             logger.info("[STEP 3] Submitting login form...")
             submit_btn = page.locator('button[type="submit"]').first
-            await submit_btn.click(force=True)
+            await submit_btn.click()
             await asyncio.sleep(5)
 
-            # Save Live Screenshot of Steam Login Attempt
+            # Save Live Screenshot of Pure Login State
             await page.screenshot(path="./artifacts/screenshots/steam.png")
 
             # Step 4: Fetch Verification Code from Email
@@ -227,8 +213,7 @@ class AutomationRunner:
             # Step 5: Input Verification Code
             guard_input = await page.wait_for_selector('input[type="text"]', timeout=10000)
             if guard_input:
-                await guard_input.focus()
-                await guard_input.fill(code, force=True)
+                await guard_input.fill(code)
                 await page.keyboard.press("Enter")
                 logger.info("[STEP 6] Code submitted to Steam Guard!")
 
