@@ -121,10 +121,17 @@ export async function updateAccountStatus(accountId, status, extraFields = {}) {
     'updated_at'
   ]);
 
+  // Allowed values for stock_accounts_status_check constraint (lowercase)
+  // 'processing' is intentionally omitted because it violates the DB constraint
+  const allowedStatuses = new Set(['available', 'completed', 'failed', 'used']);
+
   const sanitizedPayload = {
-    status,
     updated_at: new Date().toISOString(),
   };
+
+  if (status && allowedStatuses.has(String(status).toLowerCase())) {
+    sanitizedPayload.status = String(status).toLowerCase();
+  }
 
   for (const [k, v] of Object.entries(extraFields)) {
     if (validColumns.has(k) && v !== undefined) {
@@ -159,7 +166,7 @@ export async function updateAccountStatus(accountId, status, extraFields = {}) {
         throw error;
       }
 
-      console.log(`[Supabase] Successfully updated account ID ${accountId} status to '${status}'`);
+      console.log(`[Supabase] Successfully updated account ID ${accountId} with payload:`, JSON.stringify(sanitizedPayload));
       return data;
     } catch (err) {
       console.error(`[Supabase] updateAccountStatus exception for ID ${accountId}:`, err.message);

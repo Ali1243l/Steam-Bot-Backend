@@ -33,6 +33,8 @@ import {
   executeSteamEmailChange,
   fetchOutlookVerificationCode,
   parseSteamVerificationCode,
+  extractActiveSessionId,
+  triggerSteamChangeEmailVerification,
 } from './src/server/emailManager.js';
 
 import SteamTotp from 'steam-totp';
@@ -370,25 +372,32 @@ async function bootstrap() {
         finalCode = emailResult.verificationCode;
       } else {
         // Direct submission with pre-provided code
-        addLog('info', `Submitting manual verification code [${finalCode}] to Steam...`);
+        const activeSessionId = extractActiveSessionId(authResult.community, authResult.sessionID);
+        addLog('info', `Submitting manual verification code [${finalCode}] to Steam Help Wizard... Active sessionid: [${activeSessionId.substring(0, 6)}***]`);
         await new Promise((resolve, reject) => {
           authResult.community.httpRequestPost(
             {
               uri: 'https://help.steampowered.com/en/wizard/AjaxChangeEmail',
               form: {
-                sessionid: authResult.sessionID,
+                sessionid: activeSessionId,
                 wizard_ajax: 1,
                 email: target_email,
                 code: finalCode,
+              },
+              headers: {
+                Referer: 'https://help.steampowered.com/en/wizard/HelpWithLoginInfo?issueid=406',
+                Origin: 'https://help.steampowered.com',
+                'X-Requested-With': 'XMLHttpRequest',
               },
               json: true,
             },
             (err, response, body) => {
               if (err) return reject(err);
+              addLog('info', `Steam Help Wizard AjaxChangeEmail exact response:`, JSON.stringify(body));
               if (body && (body.success === 1 || body.success === true || body.result === 1)) {
                 resolve(body);
               } else {
-                reject(new Error(body?.error || body?.msg || 'Steam rejected verification code'));
+                reject(new Error(body?.error || body?.msg || JSON.stringify(body)));
               }
             }
           );
