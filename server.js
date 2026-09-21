@@ -9,7 +9,6 @@
  */
 
 import express from 'express';
-import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
@@ -52,7 +51,17 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 8000;
 
-app.use(cors({ origin: true, credentials: true }));
+// Built-in Native CORS (Zero External Dependency required)
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
 app.use(express.json());
 
 // In-memory live logs ring buffer
@@ -316,7 +325,7 @@ app.post('/api/change-email', async (req, res) => {
       // Direct submission with pre-provided code
       const activeSessionId = extractActiveSessionId(authResult.community, authResult.sessionID);
       addLog('info', `Submitting manual verification code [${finalCode}] to Steam Help Wizard... Active sessionid: [${activeSessionId ? activeSessionId.substring(0, 6) + '***' : 'empty'}]`);
-      
+
       await new Promise((resolve, reject) => {
         authResult.community.httpRequestPost(
           {
