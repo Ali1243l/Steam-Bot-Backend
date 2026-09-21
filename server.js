@@ -39,6 +39,15 @@ import SteamTotp from 'steam-totp';
 
 dotenv.config();
 
+// Global process error handlers to prevent socket resets from crashing the Node.js daemon
+process.on('uncaughtException', (err) => {
+  console.error('[SteamNode-CRITICAL] Uncaught exception handled:', err.message);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('[SteamNode-CRITICAL] Unhandled promise rejection handled:', reason);
+});
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -407,10 +416,20 @@ async function bootstrap() {
       });
     } catch (err) {
       addLog('error', `Email change failed: ${err.message}`);
+      const isImapRestricted =
+        err.code === 'EMAIL_CODE_EXTRACTION_FAILED' ||
+        err.message?.includes('disabled') ||
+        err.message?.includes('AUTHENTICATE') ||
+        err.message?.includes('ECONNRESET');
+
       res.status(500).json({
         success: false,
         error: err.message,
-        code: err.code || 'EMAIL_CHANGE_FAILED',
+        code: err.code || (isImapRestricted ? 'OUTLOOK_AUTH_RESTRICTED' : 'EMAIL_CHANGE_FAILED'),
+        requiresManualCode: isImapRestricted,
+        message: isImapRestricted
+          ? 'Steam has triggered the verification email to your inbox! Microsoft restricts automated IMAP login on this Outlook account. Please check your Outlook inbox directly, enter the 5-character code in the box below, and click Change Email.'
+          : err.message,
       });
     }
   });

@@ -92,6 +92,7 @@ export default function App() {
   const [emailPasswordInput, setEmailPasswordInput] = useState('');
   const [manualCodeInput, setManualCodeInput] = useState('');
   const [isChangingEmail, setIsChangingEmail] = useState(false);
+  const [emailNotice, setEmailNotice] = useState<string | null>(null);
 
   const fetchHealth = useCallback(async () => {
     try {
@@ -267,7 +268,13 @@ export default function App() {
         setTargetEmailInput('');
         setEmailPasswordInput('');
         setManualCodeInput('');
+        setEmailNotice(null);
         await refreshAll();
+      } else if (data.requiresManualCode) {
+        setEmailNotice(
+          data.message ||
+            'Steam has dispatched the confirmation code to your email! Microsoft IMAP login is restricted on this mailbox. Please check your Outlook inbox, enter the 5-character code below, and click Change Email to complete.'
+        );
       }
     } catch (err: any) {
       setTaskResult({
@@ -750,6 +757,18 @@ export default function App() {
                 <span className="text-slate-400">CM Socket &rarr; WebSession &rarr; Outlook IMAP &rarr; Steam Help</span>
               </div>
             </div>
+
+            {emailNotice && (
+              <div className="p-3 rounded-xl bg-amber-950/60 border border-amber-500/40 text-amber-200 text-xs space-y-1">
+                <div className="flex items-center gap-2 font-semibold text-amber-400">
+                  <span className="inline-block w-2 h-2 rounded-full bg-amber-400 animate-ping" />
+                  Action Required: Enter Verification Code
+                </div>
+                <p className="text-[11px] leading-relaxed text-slate-300">
+                  {emailNotice}
+                </p>
+              </div>
+            )}
 
             <form onSubmit={handleExecuteEmailChange} className="space-y-3 text-xs">
               <div>

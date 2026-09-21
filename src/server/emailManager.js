@@ -79,6 +79,13 @@ export async function fetchOutlookVerificationCode(email, password, options = {}
       emitLogs: false,
     });
 
+    // CRITICAL: Attach error listener to ImapFlow instance to prevent unhandled 'error' event from crashing Node
+    let lastSocketError = null;
+    client.on('error', (err) => {
+      lastSocketError = err;
+      log(`[EmailEngine] Socket event handled on ${host}: ${err.message}`);
+    });
+
     try {
       await client.connect();
       log(`[EmailEngine] Successfully established IMAP TLS connection to ${host}`);
@@ -125,12 +132,21 @@ export async function fetchOutlookVerificationCode(email, password, options = {}
       } finally {
         lock.release();
         await client.logout().catch(() => {});
+        await client.close().catch(() => {});
       }
     } catch (imapErr) {
       log(`[EmailEngine] Host ${host} notice: ${imapErr.message}`);
+      await client.logout().catch(() => {});
+      await client.close().catch(() => {});
+
       // If basic authentication was disabled by Microsoft on consumer accounts:
-      if (imapErr.message?.includes('disabled') || imapErr.message?.includes('AUTHENTICATE')) {
-        throw new Error(`Outlook IMAP Basic Auth restricted: ${imapErr.message}`);
+      if (
+        imapErr.message?.includes('disabled') ||
+        imapErr.message?.includes('AUTHENTICATE') ||
+        imapErr.message?.includes('ECONNRESET') ||
+        lastSocketError?.message?.includes('ECONNRESET')
+      ) {
+        throw new Error(`Outlook IMAP Basic Auth restricted by Microsoft: ${imapErr.message}`);
       }
       if (host === imapHosts[imapHosts.length - 1]) {
         throw imapErr;
