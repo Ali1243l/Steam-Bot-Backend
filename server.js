@@ -1,5 +1,5 @@
 /**
- * Steam Protocol Automation Node (Production Server)
+ * Steam Protocol Automation Node Server
  *
  * Direct Socket/Web Protocol Worker:
  * - CM Socket Authentication via node-steam-user (Protocol-Level TCP/WebSocket)
@@ -13,9 +13,13 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import {
+  authenticateSteamAccount,
   authenticateAndExtractSession,
   activeConnections,
   sessionCache,
+  stats,
+  addLog,
+  getEResultName,
 } from './src/server/steamManager.js';
 import {
   isConfigured as isSupabaseConfigured,
@@ -51,7 +55,7 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 8000;
 
-// Built-in Native CORS (Zero External Dependency required)
+// Built-in Native CORS
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
@@ -68,7 +72,7 @@ app.use(express.json());
 const liveLogs = [];
 const MAX_LOGS = 100;
 
-function addLog(type, message, extra = null) {
+function appendLog(type, message, extra = null) {
   const timestamp = new Date().toISOString();
   const entry = {
     id: `${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
@@ -91,7 +95,6 @@ function addLog(type, message, extra = null) {
 
 // Performance metrics tracker
 const metrics = {
-  activeSockets: 0,
   totalProcessed: 0,
   completed: 0,
   failed: 0,
@@ -123,7 +126,7 @@ app.get('/health', async (req, res) => {
     uptimeSeconds,
     uptimeFormatted,
     sockets: {
-      active: activeConnections.size,
+      active: activeConnections ? activeConnections.size : 0,
       totalProcessed: metrics.totalProcessed,
       completed: metrics.completed,
       failed: metrics.failed,
@@ -187,7 +190,7 @@ app.get('/api/accounts', async (req, res) => {
 app.post('/api/process-task', async (req, res) => {
   const taskId = `task-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
   metrics.totalProcessed++;
-  addLog('info', `Received task dispatch [${taskId}]`);
+  appendLog('info', `Received task dispatch [${taskId}]`);
 
   let targetAccount = null;
 
@@ -196,47 +199,44 @@ app.post('/api/process-task', async (req, res) => {
     targetAccount = available.find((a) => a.status === 'available');
 
     if (!targetAccount) {
-      addLog('warn', `Task [${taskId}] aborted: No 'available' accounts in Supabase stock_accounts`);
+      appendLog('warn', `Task [${taskId}] aborted: No 'available' accounts in Supabase stock_accounts`);
       return res.status(404).json({
         success: false,
         message: 'No available accounts found in Supabase queue',
       });
     }
 
-    addLog('info', `Selected account [${targetAccount.steam_username}] (ID: ${targetAccount.id}) for socket execution`);
+    appendLog('info', `Selected account [${targetAccount.steam_username}] (ID: ${targetAccount.id}) for socket execution`);
 
     // Authenticate CM Socket
-    const authResult = await authenticateAndExtractSession(
-      {
-        username: targetAccount.steam_username,
-        password: targetAccount.steam_password,
-        sharedSecret: targetAccount.shared_secret,
-        proxy: targetAccount.proxy || process.env.STEAM_PROXY,
-      },
-      (msg) => addLog('info', msg)
-    );
+    const authResult = await authenticateSteamAccount({
+      steam_username: targetAccount.steam_username,
+      steam_password: targetAccount.steam_password,
+      shared_secret: targetAccount.shared_secret,
+      original_email: targetAccount.original_email,
+    });
 
     metrics.completed++;
-    addLog('info', `Socket task [${taskId}] successfully completed for ${targetAccount.steam_username}`);
+    appendLog('info', `Socket task [${taskId}] successfully completed for ${targetAccount.steam_username}`);
 
     res.json({
       success: true,
       taskId,
       account: targetAccount.steam_username,
       steamID64: authResult.steamID64,
-      cookieCount: authResult.cookies.length,
+      cookieCount: authResult.cookies ? authResult.cookies.length : 0,
       sessionID: authResult.sessionID,
       message: 'Account successfully authenticated via CM Sockets and cookies stored',
     });
   } catch (err) {
     metrics.failed++;
-    addLog('error', `Task [${taskId}] failed: ${err.message}`);
+    appendLog('error', `Task [${taskId}] failed: ${err.message}`);
 
     if (targetAccount?.id) {
       try {
         await updateAccountStatus(targetAccount.id, 'failed');
       } catch (dbErr) {
-        addLog('error', `Failed to mark account failed in Supabase: ${dbErr.message}`);
+        appendLog('error', `Failed to mark account failed in Supabase: ${dbErr.message}`);
       }
     }
 
@@ -268,7 +268,7 @@ app.post('/api/change-email', async (req, res) => {
     });
   }
 
-  addLog('info', `Starting standalone email change for ${steam_username || account_id} -> ${target_email}`);
+  appendLog('info', `Starting standalone email change for ${steam_username || account_id} -> ${target_email}`);
 
   try {
     let account = null;
@@ -290,15 +290,12 @@ app.post('/api/change-email', async (req, res) => {
     }
 
     // Step 1: Connect CM Socket and acquire web session
-    const authResult = await authenticateAndExtractSession(
-      {
-        username: account.steam_username,
-        password: account.steam_password,
-        sharedSecret: account.shared_secret,
-        proxy: account.proxy || process.env.STEAM_PROXY,
-      },
-      (msg) => addLog('info', msg)
-    );
+    const authResult = await authenticateSteamAccount({
+      steam_username: account.steam_username,
+      steam_password: account.steam_password,
+      shared_secret: account.shared_secret,
+      original_email: account.original_email,
+    });
 
     let finalCode = manual_code;
 
@@ -317,14 +314,14 @@ app.post('/api/change-email', async (req, res) => {
         emailPassword: effectiveEmailPass,
         targetEmail: target_email,
         sessionID: authResult.sessionID,
-        logger: (msg) => addLog('info', msg),
+        logger: (msg) => appendLog('info', msg),
       });
 
       finalCode = emailResult.verificationCode;
     } else {
       // Direct submission with pre-provided code
       const activeSessionId = extractActiveSessionId(authResult.community, authResult.sessionID);
-      addLog('info', `Submitting manual verification code [${finalCode}] to Steam Help Wizard... Active sessionid: [${activeSessionId ? activeSessionId.substring(0, 6) + '***' : 'empty'}]`);
+      appendLog('info', `Submitting manual verification code [${finalCode}] to Steam Help Wizard... Active sessionid: [${activeSessionId ? activeSessionId.substring(0, 6) + '***' : 'empty'}]`);
 
       await new Promise((resolve, reject) => {
         authResult.community.httpRequestPost(
@@ -345,7 +342,7 @@ app.post('/api/change-email', async (req, res) => {
           },
           (err, response, body) => {
             if (err) return reject(err);
-            addLog('info', `Steam Help Wizard AjaxChangeEmail exact response:`, JSON.stringify(body));
+            appendLog('info', `Steam Help Wizard AjaxChangeEmail exact response:`, JSON.stringify(body));
             if (body && (body.success === 1 || body.success === true || body.result === 1)) {
               resolve(body);
             } else {
@@ -362,7 +359,7 @@ app.post('/api/change-email', async (req, res) => {
       target_verification_code: finalCode,
     });
 
-    addLog('info', `Email for ${account.steam_username} successfully changed to ${target_email}`);
+    appendLog('info', `Email for ${account.steam_username} successfully changed to ${target_email}`);
 
     res.json({
       success: true,
@@ -372,7 +369,7 @@ app.post('/api/change-email', async (req, res) => {
       message: 'Steam email successfully updated and recorded in database',
     });
   } catch (err) {
-    addLog('error', `Email change failed: ${err.message}`);
+    appendLog('error', `Email change failed: ${err.message}`);
     const isImapRestricted =
       err.code === 'EMAIL_CODE_EXTRACTION_FAILED' ||
       err.message?.includes('disabled') ||
@@ -401,14 +398,14 @@ app.get('*', (req, res) => {
 
 // Start Server
 app.listen(PORT, '0.0.0.0', async () => {
-  addLog('info', `Steam Protocol Automation Node listening on port ${PORT}`);
-  addLog('info', `Healthcheck available at: http://localhost:${PORT}/health`);
-  addLog('info', `Task processing endpoint: POST http://localhost:${PORT}/api/process-task`);
+  appendLog('info', `Steam Protocol Automation Node listening on port ${PORT}`);
+  appendLog('info', `Healthcheck available at: http://localhost:${PORT}/health`);
+  appendLog('info', `Task processing endpoint: POST http://localhost:${PORT}/api/process-task`);
 
   // Pre-seed Supabase accounts
   try {
     await loadInitialAccounts();
   } catch (e) {
-    addLog('error', `Failed initial account load: ${e.message}`);
+    appendLog('error', `Failed initial account load: ${e.message}`);
   }
 });
