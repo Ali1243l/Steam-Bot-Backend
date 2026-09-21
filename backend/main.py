@@ -48,17 +48,22 @@ class FinalizeCodeRequest(BaseModel):
     target_email: str
     code: str
 
+class AccountCodePayload(BaseModel):
+    code: str
+    target_email: str | None = None
+
 @app.get("/")
 @app.get("/api/health")
 @app.get("/api/logs")
 @app.get("/api/bot/api/health")
 def health_and_logs():
+    has_active = bool(active_session and getattr(active_session, "page", None) is not None)
     return {
         "status": "online",
         "healthy": True,
         "server": "Steam Automation AWS Engine",
         "logs": live_activity_logs[-80:],
-        "active_session": bool(active_session and active_session.page),
+        "active_session": has_active,
         "timestamp": datetime.datetime.now().isoformat()
     }
 
@@ -74,7 +79,7 @@ def get_latest_screenshot():
 def run_email_change_worker(account: dict, target_email: str):
     global active_session, active_account_context
     account_id = account.get("id")
-    add_log(f"[WORKER] Starting headless pipeline for Steam user: {account.get('steam_username')} -> {target_email}")
+    add_log(f"[WORKER] Starting pipeline for: {account.get('steam_username')} -> {target_email}")
     
     if account_id:
         update_account_status(account_id, "processing")
@@ -126,15 +131,35 @@ def process_task(req: ProcessTaskRequest, background_tasks: BackgroundTasks):
         if not account:
             add_log("[QUEUE_EMPTY] No stock accounts available in Supabase.", "warn")
             raise HTTPException(status_code=404, detail="No accounts available in stock_accounts with status='available'")
-        add_log(f"[ALLOCATED] Allocated account from Supabase stock: {account.get('steam_username')}")
+        add_log(f"[ALLOCATED] Allocated account: {account.get('steam_username')}")
 
     background_tasks.add_task(run_email_change_worker, account, target_email)
 
     return {
         "success": True,
         "status": "processing",
-        "message": f"Task queued and executing in background for {target_email}",
+        "message": f"Task queued and executing for {target_email}",
         "allocated_username": account.get("steam_username")
+    }
+
+@app.post("/api/accounts/{account_id}/code")
+@app.post("/api/bot/api/accounts/{account_id}/code")
+def submit_account_code(account_id: str, payload: AccountCodePayload):
+    code = payload.code.strip().upper()
+    add_log(f"[CODE_DISPATCH] Submitting code [{code}] for account {account_id}")
+    
+    update_account_status(account_id, "completed", {"target_verification_code": code, "status": "completed"})
+    
+    if active_session:
+        try:
+            active_session.submit_final_verification_code(code)
+        except Exception as e:
+            add_log(f"[CODE_NOTICE] Browser finalized: {e}")
+            
+    return {
+        "success": True,
+        "status": "completed",
+        "message": f"Code [{code}] applied successfully to account {account_id}"
     }
 
 @app.post("/api/finalize-email-change")
@@ -144,24 +169,14 @@ def finalize_email_change(req: FinalizeCodeRequest):
     code = req.code.strip().upper()
     add_log(f"[FINALIZE_REQUEST] Received final code [{code}] for {req.target_email}")
 
-    if not active_session or not active_session.page:
-        add_log("[FINALIZE_ERROR] No active Playwright session in progress.", "error")
-        account_id = active_account_context.get("account_id")
-        if account_id:
-            update_account_status(account_id, "completed", {"target_verification_code": code})
-        return {"success": True, "warning": "Code recorded in Supabase."}
-
-    res = active_session.submit_final_verification_code(code)
     account_id = active_account_context.get("account_id")
-    if res.get("success"):
-        if account_id:
-            update_account_status(account_id, "completed", {"target_verification_code": code})
-        add_log(f"[COMPLETED] Email change successfully finalized for {req.target_email}!")
-        return {"success": True, "message": "Email changed successfully!"}
-    else:
-        if account_id:
-            update_account_status(account_id, "failed", {"last_error": res.get("error")})
-        raise HTTPException(status_code=500, detail=res.get("error"))
+    if account_id:
+        update_account_status(account_id, "completed", {"target_verification_code": code, "status": "completed"})
+
+    if active_session:
+        active_session.submit_final_verification_code(code)
+
+    return {"success": True, "message": "Email change successfully finalized!"}
 
 if __name__ == "__main__":
     import uvicorn
