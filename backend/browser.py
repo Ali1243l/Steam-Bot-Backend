@@ -36,7 +36,7 @@ class SteamAutomationSession:
             )
             self.context = self.browser.new_context(
                 viewport={"width": 1280, "height": 800},
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36"
             )
             self.page = self.context.new_page()
 
@@ -58,44 +58,50 @@ class SteamAutomationSession:
             self.page.wait_for_timeout(3500)
             take_snapshot(self.page, "02_after_login_submit")
 
-            # 2. Account Details
-            self.log("[Step 3] Navigating to Steam Account details...")
-            self.page.goto("https://store.steampowered.com/account/", timeout=45000)
-            self.page.wait_for_timeout(1500)
-
-            # 3. Wizard
-            self.log("[Step 4] Requesting change email wizard...")
-            self.page.goto("https://help.steampowered.com/en/wizard/HelpWithLoginInfoReset?issueid=409", timeout=45000)
-            self.page.wait_for_timeout(1500)
-
-            self.log("[Step 5] Clicking 'Email verification code' to current Outlook email...")
-            self.page.locator("text='Email an account verification code'").click()
+            # 2. Account Direct Email Change
+            self.log("[Step 3] Navigating directly to Steam change email portal...")
+            self.page.goto("https://store.steampowered.com/account/changeemail/", timeout=45000)
             self.page.wait_for_timeout(2000)
-            take_snapshot(self.page, "05_code_dispatched_to_outlook")
+            take_snapshot(self.page, "03_change_email_page")
 
-            # 4. Extract Outlook Code
-            self.log(f"[Step 6] Extracting code from Outlook: {current_email}...")
+            # If redirected to wizard, handle wizard buttons
+            self.log("[Step 4] Checking for verification request button...")
+            wizard_btn = self.page.locator("a:has-text('Email'), button:has-text('Email'), .help_wizard_button, a:has-text('verification code')").first
+            if wizard_btn.count() > 0:
+                wizard_btn.click()
+                self.page.wait_for_timeout(2000)
+
+            take_snapshot(self.page, "04_code_requested_from_steam")
+            self.log("[Step 5] Steam verification code dispatched to Outlook!")
+
+            # 3. Extract Outlook Code
+            self.log(f"[Step 6] Extracting code from Outlook ({current_email})...")
             outlook_code = get_outlook_verification_code(current_email, current_email_password)
             if not outlook_code:
                 raise Exception("Failed to retrieve code from Outlook inbox within timeout.")
             self.log(f"[Step 7] Outlook verification code retrieved: [{outlook_code}]")
 
-            # Enter Outlook Code
-            code_input = self.page.locator("input[type='text']").first
+            # 4. Enter Outlook Code into Steam
+            code_input = self.page.locator("input[type='text'], input[name='email_confirmation_code'], input.forgot_login_input").first
             code_input.fill(outlook_code)
-            self.page.locator("button:has-text('Continue'), input[type='submit'][value='Continue'], button[type='submit']").first.click()
-            self.page.wait_for_timeout(2000)
+            
+            continue_btn = self.page.locator("button:has-text('Continue'), input[type='submit'][value='Continue'], button[type='submit'], .btn_blue_steamui").first
+            continue_btn.click()
+            self.page.wait_for_timeout(2500)
+            take_snapshot(self.page, "05_submitted_outlook_code")
 
             # 5. Enter New Email Address
             self.log(f"[Step 8] Entering New Email Address: {new_email}...")
             new_email_input = self.page.locator("input[type='email'], input[name='email'], input[type='text']").first
             new_email_input.fill(new_email)
-            self.page.locator("button:has-text('Change my email address'), button[type='submit'], input[type='submit']").first.click()
+            
+            submit_email_btn = self.page.locator("button:has-text('Change my email address'), button:has-text('Next'), button[type='submit'], input[type='submit']").first
+            submit_email_btn.click()
             self.page.wait_for_timeout(2500)
-            take_snapshot(self.page, "07_final_code_sent_to_target_email")
+            take_snapshot(self.page, "06_final_code_sent_to_target_email")
 
             self.log(f"[Step 9] [SUCCESS] Steam sent final verification code to {new_email}!")
-            self.log("[Step 10] Browser is KEEPING the page open waiting for your 5-character code...")
+            self.log("[Step 10] Browser is waiting for your 5-character code from Gmail...")
 
             return {
                 "success": True,
@@ -115,7 +121,6 @@ class SteamAutomationSession:
             if not self.page or self.page.is_closed():
                 raise Exception("Browser page is not open.")
 
-            # ابحث عن خانة الكود في نفس الصفحة المفتوحة
             code_box = self.page.locator("input[type='text'], input[name='email_confirmation_code'], input.forgot_login_input").first
             if code_box.count() == 0:
                 take_snapshot(self.page, "error_final_input_not_found")
@@ -124,11 +129,10 @@ class SteamAutomationSession:
             code_box.fill(code)
             self.page.wait_for_timeout(500)
 
-            # الضغط على زر تأكيد تغيير الإيميل
-            confirm_btn = self.page.locator("button:has-text('Change my email address'), button:has-text('Submit'), input[type='submit'], button[type='submit']").first
+            confirm_btn = self.page.locator("button:has-text('Change my email address'), button:has-text('Submit'), input[type='submit'], button[type='submit'], .btn_blue_steamui").first
             confirm_btn.click()
             self.page.wait_for_timeout(3000)
-            take_snapshot(self.page, "08_email_change_completed")
+            take_snapshot(self.page, "07_email_change_completed")
 
             self.log(f"[SUCCESS] EMAIL HAS OFFICIALLY CHANGED TO YOUR TARGET EMAIL!")
             self.close()
