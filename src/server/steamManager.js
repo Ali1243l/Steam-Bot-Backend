@@ -12,6 +12,9 @@ import SteamTotp from 'steam-totp';
 import SteamCommunity from 'steamcommunity';
 
 // Operational metrics for node health monitoring
+export const activeConnections = new Map();
+export const sessionCache = new Map();
+
 export const stats = {
   startTime: Date.now(),
   totalProcessed: 0,
@@ -271,3 +274,5 @@ export async function authenticateSteamAccount(account, timeoutMs = 35000) {
     }
   });
 }
+
+export const authenticateAndExtractSession = authenticateSteamAccount;
