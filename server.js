@@ -134,11 +134,8 @@ async function bootstrap() {
       const username = targetAccount.steam_username;
 
       // 3. Atomically transition status to 'processing' in Supabase
-      if (accountId && typeof accountId === 'number') {
-        await updateAccountStatus(accountId, 'processing', {
-          last_error: null,
-          started_at: new Date().toISOString(),
-        });
+      if (accountId) {
+        await updateAccountStatus(accountId, 'processing');
       }
 
       addLog('info', `Account [${username}] locked for processing. Establishing CM Socket connection...`);
@@ -149,10 +146,9 @@ async function bootstrap() {
       // 5. Update status to 'completed' in Supabase
       const updateData = {
         target_verification_code: authResult.target_verification_code || null,
-        last_error: null,
       };
 
-      if (accountId && typeof accountId === 'number') {
+      if (accountId) {
         await updateAccountStatus(accountId, 'completed', updateData);
       }
 
@@ -180,11 +176,9 @@ async function bootstrap() {
         code: err.code,
       });
 
-      // Update Supabase with 'failed' status and error details
-      if (req.body?.id && typeof req.body.id === 'number') {
-        await updateAccountStatus(req.body.id, 'failed', {
-          last_error: err.eresultName || err.message,
-        });
+      // Update Supabase with 'failed' status
+      if (targetAccount?.id) {
+        await updateAccountStatus(targetAccount.id, 'failed').catch(() => {});
       }
 
       return res.status(500).json({

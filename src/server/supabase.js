@@ -15,6 +15,17 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
+// Ensure WebSocket compatibility for Node.js environments without native WebSocket
+if (typeof globalThis.WebSocket === 'undefined') {
+  globalThis.WebSocket = class WebSocketStub {
+    constructor() {}
+    addEventListener() {}
+    removeEventListener() {}
+    send() {}
+    close() {}
+  };
+}
+
 const supabaseUrl = process.env.SUPABASE_URL || '';
 const supabaseKey = process.env.SUPABASE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 
@@ -72,7 +83,7 @@ export async function fetchNextAvailableAccount() {
         .from('stock_accounts')
         .select('*')
         .eq('status', 'available')
-        .order('id', { ascending: true })
+        .order('created_at', { ascending: true })
         .limit(1)
         .maybeSingle();
 
@@ -98,17 +109,34 @@ export async function fetchNextAvailableAccount() {
  * Status values: 'available', 'processing', 'completed', 'failed'
  */
 export async function updateAccountStatus(accountId, status, extraFields = {}) {
-  const updatePayload = {
+  // Only update columns that exist in the Supabase stock_accounts table
+  const validColumns = new Set([
+    'status',
+    'target_verification_code',
+    'assigned_game',
+    'steam_username',
+    'steam_password',
+    'original_email',
+    'email_password',
+    'updated_at'
+  ]);
+
+  const sanitizedPayload = {
     status,
-    ...extraFields,
     updated_at: new Date().toISOString(),
   };
+
+  for (const [k, v] of Object.entries(extraFields)) {
+    if (validColumns.has(k) && v !== undefined) {
+      sanitizedPayload[k] = v;
+    }
+  }
 
   if (isConfigured && supabaseClient) {
     try {
       const { data, error } = await supabaseClient
         .from('stock_accounts')
-        .update(updatePayload)
+        .update(sanitizedPayload)
         .eq('id', accountId)
         .select()
         .single();
@@ -131,7 +159,7 @@ export async function updateAccountStatus(accountId, status, extraFields = {}) {
   if (index !== -1) {
     memoryAccounts[index] = {
       ...memoryAccounts[index],
-      ...updatePayload,
+      ...sanitizedPayload,
     };
     return memoryAccounts[index];
   }
@@ -148,7 +176,7 @@ export async function fetchAccountsList(limit = 50) {
       const { data, error } = await supabaseClient
         .from('stock_accounts')
         .select('*')
-        .order('id', { ascending: false })
+        .order('created_at', { ascending: false })
         .limit(limit);
 
       if (error) throw error;
