@@ -197,9 +197,9 @@ export async function insertAccount(accountData) {
     steam_username: accountData.steam_username,
     steam_password: accountData.steam_password,
     original_email: accountData.original_email || null,
+    email_password: accountData.email_password || null,
     status: accountData.status || 'available',
     target_verification_code: accountData.target_verification_code || null,
-    shared_secret: accountData.shared_secret || null,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   };

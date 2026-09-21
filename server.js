@@ -29,6 +29,12 @@ import {
   getEResultName,
 } from './src/server/steamManager.js';
 
+import {
+  executeSteamEmailChange,
+  fetchOutlookVerificationCode,
+  parseSteamVerificationCode,
+} from './src/server/emailManager.js';
+
 import SteamTotp from 'steam-totp';
 
 dotenv.config();
@@ -143,16 +149,42 @@ async function bootstrap() {
       // 4. Authenticate at the protocol level via steam-user
       const authResult = await authenticateSteamAccount(targetAccount);
 
-      // 5. Update status to 'completed' in Supabase
+      let emailChangeResult = null;
+      const targetEmail = req.body?.target_email || (targetAccount.assigned_game?.includes('@') ? targetAccount.assigned_game : null);
+
+      // 5. Automated Email Change Flow (if target_email is requested and original_email exists)
+      if (targetEmail && authResult.community) {
+        addLog('info', `Target email requested: ${targetEmail}. Starting automated Steam Email Change & Outlook verification...`);
+        try {
+          emailChangeResult = await executeSteamEmailChange(authResult.community, {
+            originalEmail: targetAccount.original_email,
+            emailPassword: targetAccount.email_password,
+            targetEmail,
+            sessionID: authResult.sessionID,
+            logger: (msg) => addLog('info', msg),
+          });
+          addLog('info', `Email change finalized! Verified with code: ${emailChangeResult.verificationCode}`);
+        } catch (emailErr) {
+          addLog('warn', `Automated email change step note: ${emailErr.message}`);
+          // If code was manual or extraction failed, we keep the error details
+          emailChangeResult = {
+            success: false,
+            error: emailErr.message,
+            code: emailErr.code,
+          };
+        }
+      }
+
+      // 6. Update status to 'completed' in Supabase
       const updateData = {
-        target_verification_code: authResult.target_verification_code || null,
+        target_verification_code: emailChangeResult?.verificationCode || authResult.target_verification_code || null,
       };
 
       if (accountId) {
         await updateAccountStatus(accountId, 'completed', updateData);
       }
 
-      addLog('info', `Account [${username}] authentication successfully finalized with status 'completed'`);
+      addLog('info', `Account [${username}] successfully finalized with status 'completed'`);
 
       return res.status(200).json({
         success: true,
@@ -162,13 +194,14 @@ async function bootstrap() {
           steam_username: username,
           original_email: targetAccount.original_email,
           steamID64: authResult.steamID64,
-          target_verification_code: authResult.target_verification_code,
+          target_verification_code: updateData.target_verification_code,
         },
         session: {
           sessionID: authResult.sessionID,
           cookiesCount: authResult.cookiesCount,
           authenticatedAt: authResult.authenticatedAt,
         },
+        emailChange: emailChangeResult,
       });
     } catch (err) {
       addLog('error', `Task processing failed: ${err.message}`, {
@@ -255,6 +288,160 @@ async function bootstrap() {
       });
     } catch (err) {
       res.status(400).json({ success: false, error: `Invalid shared secret: ${err.message}` });
+    }
+  });
+
+  /**
+   * POST /api/change-email
+   * Dedicated Steam Email Change & Outlook Verification Endpoint
+   */
+  app.post('/api/change-email', async (req, res) => {
+    try {
+      const {
+        id,
+        steam_username,
+        steam_password,
+        original_email,
+        email_password,
+        target_email,
+        verification_code,
+      } = req.body;
+
+      if (!target_email) {
+        return res.status(400).json({ success: false, error: 'target_email is required' });
+      }
+
+      let account = null;
+      if (steam_username && steam_password) {
+        account = {
+          id: id || `adhoc_${Date.now()}`,
+          steam_username,
+          steam_password,
+          original_email,
+          email_password,
+        };
+      } else if (id) {
+        const accounts = await fetchAccountsList();
+        account = accounts.find((a) => String(a.id) === String(id));
+      }
+
+      if (!account || !account.steam_username || !account.steam_password) {
+        return res.status(400).json({
+          success: false,
+          error: 'Valid Steam account credentials (steam_username & steam_password) or existing account id required.',
+        });
+      }
+
+      addLog('info', `Starting standalone email change for ${account.steam_username} -> ${target_email}`);
+
+      // 1. Authenticate Steam Account via CM socket & acquire WebSession
+      const authResult = await authenticateSteamAccount(account);
+
+      if (!authResult.community) {
+        throw new Error('SteamCommunity session could not be established');
+      }
+
+      let finalCode = verification_code;
+
+      // 2. If manual verification code not provided, fetch from Outlook
+      if (!finalCode) {
+        if (!account.original_email || !account.email_password) {
+          throw new Error('original_email and email_password are required to extract verification code automatically');
+        }
+
+        const emailResult = await executeSteamEmailChange(authResult.community, {
+          originalEmail: account.original_email,
+          emailPassword: account.email_password,
+          targetEmail,
+          sessionID: authResult.sessionID,
+          logger: (msg) => addLog('info', msg),
+        });
+
+        finalCode = emailResult.verificationCode;
+      } else {
+        // Direct submission with pre-provided code
+        addLog('info', `Submitting manual verification code [${finalCode}] to Steam...`);
+        await new Promise((resolve, reject) => {
+          authResult.community.httpRequestPost(
+            {
+              uri: 'https://help.steampowered.com/en/wizard/AjaxChangeEmail',
+              form: {
+                sessionid: authResult.sessionID,
+                wizard_ajax: 1,
+                email: target_email,
+                code: finalCode,
+              },
+              json: true,
+            },
+            (err, response, body) => {
+              if (err) return reject(err);
+              if (body && (body.success === 1 || body.success === true || body.result === 1)) {
+                resolve(body);
+              } else {
+                reject(new Error(body?.error || body?.msg || 'Steam rejected verification code'));
+              }
+            }
+          );
+        });
+      }
+
+      // 3. Update Supabase record
+      if (account.id) {
+        await updateAccountStatus(account.id, 'completed', {
+          target_verification_code: finalCode,
+        });
+      }
+
+      addLog('info', `Email changed successfully for ${account.steam_username} to ${target_email} (Code: ${finalCode})`);
+
+      res.json({
+        success: true,
+        message: `Steam email successfully changed to ${target_email}`,
+        account: {
+          id: account.id,
+          steam_username: account.steam_username,
+          target_email,
+          verification_code: finalCode,
+        },
+      });
+    } catch (err) {
+      addLog('error', `Email change failed: ${err.message}`);
+      res.status(500).json({
+        success: false,
+        error: err.message,
+        code: err.code || 'EMAIL_CHANGE_FAILED',
+      });
+    }
+  });
+
+  /**
+   * POST /api/extract-outlook-code
+   * Test Outlook IMAP verification code retrieval directly
+   */
+  app.post('/api/extract-outlook-code', async (req, res) => {
+    try {
+      const { email, password, timeoutMs } = req.body;
+      if (!email || !password) {
+        return res.status(400).json({ success: false, error: 'email and password are required' });
+      }
+
+      addLog('info', `Testing Outlook code retrieval for: ${email}`);
+      const code = await fetchOutlookVerificationCode(email, password, {
+        timeoutMs: timeoutMs || 30000,
+        logger: (msg) => addLog('info', msg),
+      });
+
+      res.json({
+        success: true,
+        email,
+        code,
+      });
+    } catch (err) {
+      res.status(500).json({
+        success: false,
+        error: err.message,
+        code: err.code || 'OUTLOOK_EXTRACTION_FAILED',
+      });
     }
   });
 

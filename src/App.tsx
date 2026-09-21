@@ -16,6 +16,8 @@ import {
   Server,
   Layers,
   Sparkles,
+  Mail,
+  ArrowRight,
 } from 'lucide-react';
 
 interface NodeHealth {
@@ -83,6 +85,13 @@ export default function App() {
   // 2FA TOTP Generator test state
   const [totpSecret, setTotpSecret] = useState('');
   const [generatedTotp, setGeneratedTotp] = useState<{ code: string; secondsRemaining: number } | null>(null);
+
+  // Email Change Modal State
+  const [emailChangeAccount, setEmailChangeAccount] = useState<StockAccount | null>(null);
+  const [targetEmailInput, setTargetEmailInput] = useState('');
+  const [emailPasswordInput, setEmailPasswordInput] = useState('');
+  const [manualCodeInput, setManualCodeInput] = useState('');
+  const [isChangingEmail, setIsChangingEmail] = useState(false);
 
   const fetchHealth = useCallback(async () => {
     try {
@@ -223,6 +232,51 @@ export default function App() {
       }
     } catch (err: any) {
       alert(err.message);
+    }
+  };
+
+  const handleExecuteEmailChange = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!emailChangeAccount || !targetEmailInput) return;
+
+    setIsChangingEmail(true);
+    try {
+      const res = await fetch('/api/change-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: emailChangeAccount.id,
+          steam_username: emailChangeAccount.steam_username,
+          steam_password: emailChangeAccount.steam_password,
+          original_email: emailChangeAccount.original_email,
+          email_password: emailPasswordInput || undefined,
+          target_email: targetEmailInput,
+          verification_code: manualCodeInput || undefined,
+        }),
+      });
+
+      const data = await res.json();
+      setTaskResult({
+        ok: res.ok,
+        status: res.status,
+        data,
+      });
+
+      if (res.ok) {
+        setEmailChangeAccount(null);
+        setTargetEmailInput('');
+        setEmailPasswordInput('');
+        setManualCodeInput('');
+        await refreshAll();
+      }
+    } catch (err: any) {
+      setTaskResult({
+        ok: false,
+        status: 500,
+        data: { error: err.message },
+      });
+    } finally {
+      setIsChangingEmail(false);
     }
   };
 
@@ -465,13 +519,28 @@ export default function App() {
                               )}
                             </td>
                             <td className="p-3 text-right">
-                              <button
-                                onClick={() => handleProcessTask(acc)}
-                                disabled={isProcessing}
-                                className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-cyan-400 hover:text-cyan-300 border border-slate-700 text-[11px] transition cursor-pointer disabled:opacity-40"
-                              >
-                                Run Socket
-                              </button>
+                              <div className="flex items-center justify-end gap-1.5">
+                                <button
+                                  onClick={() => handleProcessTask(acc)}
+                                  disabled={isProcessing || isChangingEmail}
+                                  className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-cyan-400 hover:text-cyan-300 border border-slate-700 text-[11px] transition cursor-pointer disabled:opacity-40"
+                                >
+                                  Run Socket
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setEmailChangeAccount(acc);
+                                    setTargetEmailInput('');
+                                    setManualCodeInput('');
+                                    setEmailPasswordInput('');
+                                  }}
+                                  disabled={isProcessing || isChangingEmail}
+                                  className="inline-flex items-center gap-1 px-2 py-1 rounded bg-indigo-950/60 hover:bg-indigo-900/80 text-indigo-300 hover:text-white border border-indigo-700/50 text-[11px] transition cursor-pointer disabled:opacity-40"
+                                >
+                                  <Mail className="w-3 h-3" />
+                                  Change Email
+                                </button>
+                              </div>
                             </td>
                           </tr>
                         );
@@ -639,6 +708,119 @@ export default function App() {
                   className="px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white font-semibold shadow-md transition cursor-pointer"
                 >
                   Enqueue
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Steam Email Change & Outlook Verification Modal */}
+      {emailChangeAccount && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs">
+          <div className="w-full max-w-lg p-6 rounded-2xl bg-slate-900 border border-indigo-900/60 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2">
+                <div className="p-1.5 rounded-lg bg-indigo-500/20 text-indigo-400">
+                  <Mail className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-semibold text-white">Steam Email Change Engine</h3>
+                  <p className="text-[11px] text-slate-400 font-mono">
+                    Target Account: <span className="text-indigo-300">{emailChangeAccount.steam_username}</span>
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setEmailChangeAccount(null)}
+                disabled={isChangingEmail}
+                className="text-slate-400 hover:text-white text-base cursor-pointer disabled:opacity-30"
+              >
+                &times;
+              </button>
+            </div>
+
+            <div className="p-3 rounded-xl bg-slate-950/70 border border-slate-800 text-[11px] space-y-1.5 text-slate-300">
+              <div className="flex items-center justify-between">
+                <span className="text-slate-400">Current Associated Email:</span>
+                <span className="font-mono text-cyan-300">{emailChangeAccount.original_email || 'Not configured in DB'}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-slate-400">Automated Pipeline:</span>
+                <span className="text-slate-400">CM Socket &rarr; WebSession &rarr; Outlook IMAP &rarr; Steam Help</span>
+              </div>
+            </div>
+
+            <form onSubmit={handleExecuteEmailChange} className="space-y-3 text-xs">
+              <div>
+                <label className="block text-slate-300 font-medium mb-1">
+                  New Target Email Address <span className="text-rose-400">*</span>
+                </label>
+                <input
+                  type="email"
+                  required
+                  value={targetEmailInput}
+                  onChange={(e) => setTargetEmailInput(e.target.value)}
+                  placeholder="e.g. customer_new_email@example.com"
+                  disabled={isChangingEmail}
+                  className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-white font-mono focus:outline-none focus:border-indigo-500 disabled:opacity-50"
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-400 mb-1">
+                  Outlook Email Password <span className="text-[10px] text-slate-500">(leave blank if already stored in DB)</span>
+                </label>
+                <input
+                  type="password"
+                  value={emailPasswordInput}
+                  onChange={(e) => setEmailPasswordInput(e.target.value)}
+                  placeholder="Optional: password to read verification code from Outlook"
+                  disabled={isChangingEmail}
+                  className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-white font-mono focus:outline-none focus:border-indigo-500 disabled:opacity-50"
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-400 mb-1">
+                  Manual 5-Character Code Override <span className="text-[10px] text-slate-500">(optional fallback)</span>
+                </label>
+                <input
+                  type="text"
+                  maxLength={5}
+                  value={manualCodeInput}
+                  onChange={(e) => setManualCodeInput(e.target.value.toUpperCase())}
+                  placeholder="e.g. 5G3K9 (if already retrieved)"
+                  disabled={isChangingEmail}
+                  className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-white font-mono tracking-widest uppercase focus:outline-none focus:border-indigo-500 disabled:opacity-50"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-3 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setEmailChangeAccount(null)}
+                  disabled={isChangingEmail}
+                  className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition cursor-pointer disabled:opacity-40"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isChangingEmail || !targetEmailInput}
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white font-semibold shadow-lg shadow-indigo-600/25 transition cursor-pointer disabled:opacity-50"
+                >
+                  {isChangingEmail ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      Executing Email Change Pipeline...
+                    </>
+                  ) : (
+                    <>
+                      <ArrowRight className="w-3.5 h-3.5" />
+                      Change Email to Target
+                    </>
+                  )}
                 </button>
               </div>
             </form>

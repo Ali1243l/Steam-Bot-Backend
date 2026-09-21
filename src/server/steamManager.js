@@ -223,6 +223,8 @@ export async function authenticateSteamAccount(account, timeoutMs = 35000) {
           steam_username,
           steamID64,
           sessionID,
+          cookies,
+          community,
           cookiesCount: cookies ? cookies.length : 0,
           target_verification_code: generatedVerificationCode,
           authenticatedAt: new Date().toISOString(),
