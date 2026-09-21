@@ -143,6 +143,19 @@ export async function updateAccountStatus(accountId, status, extraFields = {}) {
 
       if (error) {
         console.error(`[Supabase] Failed to update account ${accountId} status to ${status}:`, error.message);
+        if (error.message && error.message.includes('check constraint')) {
+          // If the DB constraint restricts status values, update without modifying status
+          const { status: _ignored, ...payloadWithoutStatus } = sanitizedPayload;
+          if (Object.keys(payloadWithoutStatus).length > 0) {
+            const retryRes = await supabaseClient
+              .from('stock_accounts')
+              .update(payloadWithoutStatus)
+              .eq('id', accountId)
+              .select()
+              .maybeSingle();
+            return retryRes.data;
+          }
+        }
         throw error;
       }
 

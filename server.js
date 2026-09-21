@@ -106,10 +106,9 @@ async function bootstrap() {
   app.post('/api/process-task', async (req, res) => {
     const taskId = `task_${Date.now()}`;
     addLog('info', `Received task processing request [${taskId}]`);
+    let targetAccount = null;
 
     try {
-      let targetAccount = null;
-
       // 1. Check if an account override was passed in the request body
       if (req.body && req.body.steam_username && req.body.steam_password) {
         targetAccount = {
@@ -139,9 +138,11 @@ async function bootstrap() {
       const accountId = targetAccount.id;
       const username = targetAccount.steam_username;
 
-      // 3. Atomically transition status to 'processing' in Supabase
+      // 3. Atomically transition status to 'processing' in Supabase (non-blocking if DB enum doesn't contain processing)
       if (accountId) {
-        await updateAccountStatus(accountId, 'processing');
+        await updateAccountStatus(accountId, 'processing').catch((e) => {
+          console.warn('[Supabase] Non-fatal: Status update to processing skipped:', e.message);
+        });
       }
 
       addLog('info', `Account [${username}] locked for processing. Establishing CM Socket connection...`);
@@ -352,7 +353,7 @@ async function bootstrap() {
         const emailResult = await executeSteamEmailChange(authResult.community, {
           originalEmail: account.original_email,
           emailPassword: account.email_password,
-          targetEmail,
+          targetEmail: target_email,
           sessionID: authResult.sessionID,
           logger: (msg) => addLog('info', msg),
         });
