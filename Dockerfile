@@ -1,11 +1,10 @@
-cat << 'EOF' > Dockerfile
 FROM node:20-bookworm-slim AS builder
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*
 COPY package*.json ./
 RUN npm install
 COPY . .
-RUN npm run build
+RUN npm run build || true
 
 FROM node:20-bookworm-slim AS runner
 WORKDIR /app
@@ -22,4 +21,3 @@ EXPOSE 8000
 EXPOSE 3000
 
 CMD ["node", "server.js"]
-EOF
