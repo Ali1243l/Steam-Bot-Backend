@@ -10,6 +10,7 @@
 import SteamUser from 'steam-user';
 import SteamTotp from 'steam-totp';
 import SteamCommunity from 'steamcommunity';
+import { extractActiveSessionId } from './emailManager.js';
 
 // Operational metrics for node health monitoring
 export const activeConnections = new Map();
@@ -228,6 +229,7 @@ export async function authenticateSteamAccount(account, timeoutMs = 35000) {
           sessionID,
           cookies,
           community,
+          client, // Provide client reference for clean logOff
           cookiesCount: cookies ? cookies.length : 0,
           target_verification_code: generatedVerificationCode,
           authenticatedAt: new Date().toISOString(),
@@ -243,6 +245,9 @@ export async function authenticateSteamAccount(account, timeoutMs = 35000) {
     client.on('disconnected', (eresult, msg) => {
       addLog('warn', `Steam CM Socket disconnected for ${steam_username}: ${msg} (${getEResultName(eresult)})`);
     });
+
+    // Save active client reference
+    activeConnections.set(steam_username, client);
 
     // Prepare logOn parameters
     const logOnDetails = {
@@ -276,3 +281,74 @@ export async function authenticateSteamAccount(account, timeoutMs = 35000) {
 }
 
 export const authenticateAndExtractSession = authenticateSteamAccount;
+
+/**
+ * Perform a clean logout for an account to prevent dangling authorized devices
+ * @param {string} username
+ * @param {Object} [client] Optional direct SteamUser client instance
+ * @param {Object} [community] Optional SteamCommunity instance to invalidate web cookies
+ */
+export async function logoutSteamAccount(username, client = null, community = null) {
+  addLog('info', `[LOGOUT] Performing complete clean logout & device deauthorization for [${username}]...`);
+  
+  // 1. Deauthorize all other devices & sign out everywhere
+  if (community) {
+    try {
+      const activeSessionId = extractActiveSessionId(community);
+      if (activeSessionId) {
+        await new Promise((resolve) => {
+          community.httpRequestPost(
+            {
+              uri: 'https://store.steampowered.com/twofactor/manage_action',
+              form: {
+                action: 'deauthorize',
+                sessionid: activeSessionId,
+              },
+              headers: {
+                Referer: 'https://store.steampowered.com/twofactor/manage',
+              },
+            },
+            () => resolve()
+          );
+        });
+        addLog('info', `[LOGOUT] Deauthorized all devices & revoked active sessions for [${username}]`);
+      }
+    } catch (deauthErr) {
+      addLog('warn', `[LOGOUT] Notice during deauthorization: ${deauthErr.message}`);
+    }
+
+    // Web session logout via SteamCommunity
+    try {
+      await new Promise((resolve) => {
+        community.httpRequestPost(
+          {
+            uri: 'https://store.steampowered.com/logout/',
+            headers: {
+              Referer: 'https://store.steampowered.com/',
+            },
+          },
+          () => resolve()
+        );
+      });
+      addLog('info', `[LOGOUT] Successfully revoked web session for [${username}]`);
+    } catch (webErr) {
+      addLog('warn', `[LOGOUT] Web logout notice for [${username}]: ${webErr.message}`);
+    }
+  }
+
+  // 2. CM Socket logoff via SteamUser
+  const targetClient = client || activeConnections.get(username);
+  if (targetClient) {
+    try {
+      targetClient.logOff();
+      activeConnections.delete(username);
+      stats.activeSockets = Math.max(0, stats.activeSockets - 1);
+      addLog('info', `[LOGOUT] Disconnected CM socket for [${username}]. No lingering session.`);
+    } catch (sockErr) {
+      addLog('warn', `[LOGOUT] Socket logOff notice for [${username}]: ${sockErr.message}`);
+    }
+  }
+
+  return { success: true, username, loggedOutAt: new Date().toISOString() };
+}
+
