@@ -1,0 +1,6 @@
+{
+  "name": "Steam Protocol Automation Node",
+  "description": "High-performance protocol-level Steam account automation node with CM socket management, Steam Guard handling, and Supabase synchronization.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
