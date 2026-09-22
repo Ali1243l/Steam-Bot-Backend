@@ -30,7 +30,13 @@ def get_outlook_verification_code(email_address: str, email_password: str, brows
     print(f"[OUTLOOK-DYNAMIC] Logging into Outlook for: {email_address}...")
     page = browser_context.new_page()
     try:
-        page.goto("https://login.live.com/", timeout=30000)
+        for attempt in range(3):
+            try:
+                page.goto("https://login.live.com/", timeout=35000, wait_until="domcontentloaded")
+                break
+            except Exception as e_nav:
+                print(f"[OUTLOOK] Retrying navigation ({attempt+1}/3): {e_nav}", flush=True)
+                page.wait_for_timeout(2000)
         page.wait_for_timeout(1000)
 
         # 1. إدخال الإيميل

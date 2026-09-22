@@ -38,7 +38,7 @@ class SteamAutomationSession:
             self.playwright = sync_playwright().start()
             self.browser = self.playwright.chromium.launch(
                 headless=True,
-                args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--window-size=1280,900"]
+                args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--disable-http2", "--window-size=1280,900"]
             )
             self.context = self.browser.new_context(
                 viewport={"width": 1280, "height": 900},
