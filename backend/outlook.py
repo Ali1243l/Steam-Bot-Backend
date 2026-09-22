@@ -85,7 +85,27 @@ def get_outlook_verification_code(email_address: str, email_password: str, brows
                 page.wait_for_timeout(1000)
 
             # البحث عن رسالة ستيم
+            # 1. التبديل إلى تبويب 'Other / 其他' إذا كان Focused فارغاً
+            other_tab = page.locator("button:has-text('Other'), button:has-text('其他'), div[role='tab']:has-text('Other'), div[role='tab']:has-text('其他')").first
+            if other_tab.count() > 0 and other_tab.is_visible():
+                try:
+                    other_tab.click()
+                    page.wait_for_timeout(1500)
+                except Exception:
+                    pass
+
+            # 2. البحث عن رسالة ستيم
             steam_item = page.locator("div[role='option']:has-text('Steam'), div:has-text('Steam Support'), span:has-text('Steam')").first
+            if steam_item.count() == 0:
+                # محاولة فحص مجلد Junk / 垃圾邮件 إذا لم توجد
+                junk = page.locator("div[title*='Junk'], span:has-text('Junk'), span:has-text('垃圾邮件')").first
+                if junk.count() > 0:
+                    try:
+                        junk.click()
+                        page.wait_for_timeout(2000)
+                        steam_item = page.locator("div[role='option']:has-text('Steam'), span:has-text('Steam')").first
+                    except Exception:
+                        pass
             if steam_item.count() > 0:
                 print("[OUTLOOK-DYNAMIC] Real Steam email spotted! Clicking...")
                 steam_item.click()
