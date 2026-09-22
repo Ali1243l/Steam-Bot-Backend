@@ -48,8 +48,8 @@ class SteamAutomationSession:
 
             # الخطوة 1: الدخول لصفحة ستيم
             self.log("[Step 1] Loading Steam Login page...")
-            self.page.goto("https://store.steampowered.com/login/", timeout=40000)
-            self.page.wait_for_timeout(2000)
+            self.page.goto("https://store.steampowered.com/login/", timeout=45000, wait_until="domcontentloaded")
+            self.page.wait_for_timeout(3000)
 
             # تخطي زر ملفات تعريف الارتباط
             try:
@@ -61,39 +61,51 @@ class SteamAutomationSession:
 
             take_snapshot(self.page, "step1_steam_login_page")
 
-            # إدخال اليوزر والباسورد والضغط الفعلي على زر Sign In
-            self.log(f"[Step 1] Filling credentials for {steam_username}...")
-            user_input = self.page.locator("input[type='text']").first
-            user_input.wait_for(state="visible", timeout=10000)
+            # 🛑 استهداف خانة اسم المستخدم الخاصة بتسجيل الدخول حصراً وليس مربع البحث!
+            self.log(f"[Step 1] Locating exact login username input for {steam_username}...")
+            
+            # في صفحة ستيم، خانة اسم المستخدم تكون داخل فورم الدخول وليس الهيدر
+            user_input = self.page.locator("input[type='text']:not(#store_nav_search_term)").first
+            user_input.wait_for(state="visible", timeout=15000)
+            user_input.click()
+            user_input.fill("")
             user_input.fill(steam_username)
 
+            # خانة كلمة المرور
             pass_input = self.page.locator("input[type='password']").first
-            pass_input.wait_for(state="visible", timeout=10000)
+            pass_input.wait_for(state="visible", timeout=15000)
+            pass_input.click()
+            pass_input.fill("")
             pass_input.fill(steam_password)
 
             take_snapshot(self.page, "step1_credentials_filled")
 
-            # الضغط المباشر على زر تسجيل الدخول
-            self.log("[Step 1] Clicking Sign In button...")
-            sign_in_btn = self.page.locator("button[type='submit']:has-text('Sign In'), button:has-text('Sign In'), button[type='submit']").first
-            if sign_in_btn.count() > 0:
+            # الضغط على زر تسجيل الدخول (Sign in) الخاص بالفورم
+            self.log("[Step 1] Clicking 'Sign in' button inside login dialog...")
+            sign_in_btn = self.page.locator("button[type='submit']:has-text('Sign in'), button[type='submit']:has-text('Sign In'), button:has-text('Sign in'), button:has-text('Sign In')").first
+            if sign_in_btn.count() > 0 and sign_in_btn.is_visible():
                 sign_in_btn.click()
             else:
                 pass_input.press("Enter")
 
-            # الانتظار حتى تسجيل الدخول أو طلب ستيم جارد
-            self.page.wait_for_timeout(6000)
+            # الانتظار حتى تسجيل الدخول الفعلي
+            self.page.wait_for_timeout(7000)
             take_snapshot(self.page, "step1_after_login_submit")
 
-            # التحقق هل طلب ستيم جارد للدخول
+            # التحقق هل الرابط انتقل للبحث (إذا كان خطأ)
+            if "search" in self.page.url:
+                raise Exception("Detected search redirect! Input selector matched search instead of login form.")
+
+            # التحقق هل طلب ستيم كود الحماية (Steam Guard حقيقي بالإيميل)
             content = self.page.content()
-            if "Steam Guard" in content or "code" in content.lower():
-                self.log("[Steam Guard] Steam requested verification code for login! Fetching from Outlook...")
-                guard_code = get_outlook_verification_code(current_email, current_email_password, self.context)
-                if guard_code:
-                    self.log(f"[Steam Guard] Entering code: {guard_code}")
-                    guard_input = self.page.locator("input[type='text']").first
-                    if guard_input.count() > 0:
+            if "Enter the code sent to your email" in content or "Steam Guard" in content:
+                # التحقق هل هناك خانة إدخال كود
+                guard_input = self.page.locator("input[type='text']:not(#store_nav_search_term)").first
+                if "sent to your email" in content.lower() or "check your email" in content.lower():
+                    self.log("[Steam Guard] Real Steam Guard code sent to Outlook! Fetching...")
+                    guard_code = get_outlook_verification_code(current_email, current_email_password, self.context)
+                    if guard_code:
+                        self.log(f"[Steam Guard] Entering code: {guard_code}")
                         guard_input.fill(guard_code)
                         self.page.keyboard.press("Enter")
                         self.page.wait_for_timeout(5000)
@@ -101,7 +113,7 @@ class SteamAutomationSession:
 
             # الخطوة 2: الانتقال لصفحة تغيير الإيميل
             self.log("[Step 2] Navigating to Steam change email portal...")
-            self.page.goto("https://store.steampowered.com/account/changeemail/", timeout=40000)
+            self.page.goto("https://store.steampowered.com/account/changeemail/", timeout=40000, wait_until="domcontentloaded")
             self.page.wait_for_timeout(3000)
             take_snapshot(self.page, "step2_change_email_page")
 
@@ -125,7 +137,7 @@ class SteamAutomationSession:
             self.log(f"[Step 5] [SUCCESS] Retrieved Outlook code: [{outlook_code}]")
 
             # إدخال الكود في ستيم
-            code_input = self.page.locator("input[type='text'], input[name='email_confirmation_code'], input.forgot_login_input").first
+            code_input = self.page.locator("input[type='text']:not(#store_nav_search_term), input[name='email_confirmation_code']").first
             code_input.fill(outlook_code, force=True)
             take_snapshot(self.page, "step5_filled_outlook_code")
 
@@ -136,11 +148,11 @@ class SteamAutomationSession:
 
             # إدخال إيميل الزبون الجديد
             self.log(f"[Step 6] Entering Target New Email: {new_email}...")
-            new_email_input = self.page.locator("input[type='email'], input[name='email'], input[type='text']").first
+            new_email_input = self.page.locator("input[type='email'], input[name='email'], input[type='text']:not(#store_nav_search_term)").first
             new_email_input.fill(new_email, force=True)
             take_snapshot(self.page, "step6_filled_new_email")
 
-            submit_email_btn = self.page.locator("button:has-text('Change my email address'), button:has-text('Next'), button[type='submit'], input[type='submit']").first
+            submit_email_btn = self.page.locator("button:has-text('Change my email address'), button:has-text('Next'), button[type='submit']").first
             submit_email_btn.click(force=True)
             self.page.wait_for_timeout(3000)
             take_snapshot(self.page, "step7_waiting_customer_verification")
@@ -159,7 +171,7 @@ class SteamAutomationSession:
             if not self.page:
                 return {"success": False, "error": "No active browser session"}
             self.log(f"Entering Customer code: [{code}]...")
-            code_input = self.page.locator("input[type='text']").first
+            code_input = self.page.locator("input[type='text']:not(#store_nav_search_term)").first
             code_input.fill(code, force=True)
             self.page.keyboard.press("Enter")
             self.page.wait_for_timeout(5000)
