@@ -1,6 +1,5 @@
 import os
 import time
-import shutil
 from playwright.sync_api import sync_playwright
 from backend.outlook import get_outlook_verification_code
 
@@ -13,9 +12,8 @@ def take_snapshot(page, name):
         page.screenshot(path=p)
         latest = os.path.join(SCREENSHOTS_DIR, "latest.png")
         page.screenshot(path=latest)
-        print(f"[SNAPSHOT] Saved: {name}.png")
-    except Exception as e:
-        print(f"[SNAPSHOT] Error taking {name}: {e}")
+    except Exception:
+        pass
 
 class SteamAutomationSession:
     def __init__(self, log_callback=None):
@@ -34,10 +32,10 @@ class SteamAutomationSession:
             self.playwright = sync_playwright().start()
             self.browser = self.playwright.chromium.launch(
                 headless=True,
-                args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--window-size=1280,800"]
+                args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--window-size=1280,900"]
             )
             self.context = self.browser.new_context(
-                viewport={"width": 1280, "height": 800},
+                viewport={"width": 1280, "height": 900},
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
             )
             self.page = self.context.new_page()
@@ -47,54 +45,46 @@ class SteamAutomationSession:
             self.page.goto("https://store.steampowered.com/login/", timeout=35000)
             self.page.wait_for_timeout(2000)
 
-            # تخطي نافذة الكوكيز إن وجدت
-            cookie_accept = self.page.locator("#acceptAllButton, button:has-text('Accept All'), button:has-text('Reject All')").first
-            if cookie_accept.count() > 0 and cookie_accept.is_visible():
-                cookie_accept.click()
-                self.page.wait_for_timeout(1000)
+            # تخطي الكوكيز
+            try:
+                self.page.evaluate("""() => {
+                    const btn = document.querySelector('#acceptAllButton, button');
+                    if (btn && btn.innerText.includes('Accept')) btn.click();
+                }""")
+            except Exception:
+                pass
 
             take_snapshot(self.page, "step1_steam_login_page")
 
-            # تعبئة اسم المستخدم وكلمة المرور
+            # تعبئة اسم المستخدم وكلمة المرور بدون اعتراض الـ UI (عبر Tab و Force)
             self.log(f"[Step 1] Filling credentials for {steam_username}...")
             user_input = self.page.locator("input[type='text']").first
-            user_input.click()
-            user_input.fill(steam_username)
+            user_input.fill(steam_username, force=True)
             self.page.wait_for_timeout(500)
 
-            pass_input = self.page.locator("input[type='password']").first
-            pass_input.click()
-            pass_input.fill(steam_password)
+            # الانتقال لحقل الباسورد بالـ Tab وتعبئته فوراً
+            user_input.press("Tab")
+            self.page.keyboard.type(steam_password)
             self.page.wait_for_timeout(500)
 
             take_snapshot(self.page, "step1_credentials_filled")
 
             # الضغط على زر تسجيل الدخول
-            sign_in_btn = self.page.locator("button:has-text('Sign in'), button[type='submit']:has-text('Sign in')").first
-            if sign_in_btn.count() > 0:
-                sign_in_btn.click()
-            else:
-                pass_input.press("Enter")
-
-            self.page.wait_for_timeout(4000)
+            self.page.keyboard.press("Enter")
+            self.page.wait_for_timeout(5000)
             take_snapshot(self.page, "step1_after_login_submit")
 
-            # التأكد من نجاح الدخول أو ظهور Steam Guard
-            page_content = self.page.content()
-            if "Incorrect account name or password" in page_content:
-                raise Exception("Steam Login failed: Incorrect username or password.")
-
-            # 2. الذهاب إلى صفحة تغيير الإيميل
+            # 2. الذهاب لصفحة تغيير الإيميل
             self.log("[Step 2] Navigating to Steam change email portal...")
             self.page.goto("https://store.steampowered.com/account/changeemail/", timeout=35000)
             self.page.wait_for_timeout(2500)
             take_snapshot(self.page, "step2_change_email_page")
 
-            # الضغط على زر إرسال كود التحقق للأوتلوك
+            # إرسال كود التحقق للأوتلوك
             wizard_btn = self.page.locator("a:has-text('Email'), button:has-text('Email'), .help_wizard_button, a:has-text('verification code')").first
             if wizard_btn.count() > 0:
-                self.log("[Step 2] Clicking button to dispatch Steam code...")
-                wizard_btn.click()
+                self.log("[Step 2] Requesting verification code to Outlook...")
+                wizard_btn.click(force=True)
                 self.page.wait_for_timeout(2500)
 
             take_snapshot(self.page, "step3_steam_code_dispatched")
@@ -112,22 +102,22 @@ class SteamAutomationSession:
             # 4. إدخال كود Outlook في ستيم
             self.log(f"[Step 5] Entering Outlook code [{outlook_code}] into Steam...")
             code_input = self.page.locator("input[type='text'], input[name='email_confirmation_code'], input.forgot_login_input").first
-            code_input.fill(outlook_code)
+            code_input.fill(outlook_code, force=True)
             take_snapshot(self.page, "step5_filled_outlook_code")
 
             continue_btn = self.page.locator("button:has-text('Continue'), input[type='submit'][value='Continue'], button[type='submit'], .btn_blue_steamui").first
-            continue_btn.click()
+            continue_btn.click(force=True)
             self.page.wait_for_timeout(3000)
             take_snapshot(self.page, "step5_after_continue")
 
             # 5. إدخال الإيميل الجديد (إيميل الزبون)
             self.log(f"[Step 6] Entering Target New Email: {new_email}...")
             new_email_input = self.page.locator("input[type='email'], input[name='email'], input[type='text']").first
-            new_email_input.fill(new_email)
+            new_email_input.fill(new_email, force=True)
             take_snapshot(self.page, "step6_filled_new_email")
 
             submit_email_btn = self.page.locator("button:has-text('Change my email address'), button:has-text('Next'), button[type='submit'], input[type='submit']").first
-            submit_email_btn.click()
+            submit_email_btn.click(force=True)
             self.page.wait_for_timeout(3000)
             take_snapshot(self.page, "step7_final_code_dispatched_to_gmail")
 
@@ -157,17 +147,15 @@ class SteamAutomationSession:
                 take_snapshot(self.page, "error_final_input_not_found")
                 raise Exception("Final verification code input field not found on active page.")
 
-            code_box.fill(code)
+            code_box.fill(code, force=True)
             self.page.wait_for_timeout(1000)
 
             confirm_btn = self.page.locator("button:has-text('Change my email address'), button:has-text('Submit'), input[type='submit'], button[type='submit'], .btn_blue_steamui").first
-            confirm_btn.click()
+            confirm_btn.click(force=True)
             self.page.wait_for_timeout(3500)
             take_snapshot(self.page, "step9_email_change_completed")
 
             self.log(f"[SUCCESS] EMAIL HAS OFFICIALLY CHANGED TO YOUR TARGET EMAIL!")
-
-            # التحقق التلقائي وتسجيل الخروج وتنظيف اللقطات
             self.cleanup_and_logout()
             return {"success": True, "status": "completed"}
         except Exception as e:
@@ -186,7 +174,6 @@ class SteamAutomationSession:
 
         self.close()
 
-        # مسح الصور المؤقتة بعد اكتمال العملية بنجاح
         try:
             for f in os.listdir(SCREENSHOTS_DIR):
                 if f != "latest.png":

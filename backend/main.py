@@ -1,3 +1,5 @@
+import logging
+logging.getLogger('uvicorn.access').setLevel(logging.WARNING)
 import os
 import datetime
 from fastapi import FastAPI, BackgroundTasks, HTTPException
