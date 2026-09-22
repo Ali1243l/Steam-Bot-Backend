@@ -67,16 +67,12 @@ class SteamAutomationSession:
             # في صفحة ستيم، خانة اسم المستخدم تكون داخل فورم الدخول وليس الهيدر
             user_input = self.page.locator("input[type='text']:not(#store_nav_search_term)").first
             user_input.wait_for(state="visible", timeout=15000)
-            user_input.click()
-            user_input.fill("")
-            user_input.fill(steam_username)
+            user_input.fill(steam_username, force=True)
 
-            # خانة كلمة المرور
+            # خانة كلمة المرور (تعبئة مباشرة مع force=True لتفادي أي غلاف شفاف)
             pass_input = self.page.locator("input[type='password']").first
             pass_input.wait_for(state="visible", timeout=15000)
-            pass_input.click()
-            pass_input.fill("")
-            pass_input.fill(steam_password)
+            pass_input.fill(steam_password, force=True)
 
             take_snapshot(self.page, "step1_credentials_filled")
 
