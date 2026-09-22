@@ -36,16 +36,15 @@ class SteamAutomationSession:
             )
             self.context = self.browser.new_context(
                 viewport={"width": 1280, "height": 800},
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36"
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
             )
             self.page = self.context.new_page()
 
-            # 1. Login
-            self.log("[Step 1] Navigating to Steam login page...")
-            self.page.goto("https://store.steampowered.com/login/", timeout=45000)
-            self.page.wait_for_timeout(2000)
+            # 1. Login to Steam
+            self.log("[Step 1] Logging into Steam...")
+            self.page.goto("https://store.steampowered.com/login/", timeout=35000)
+            self.page.wait_for_timeout(1000)
 
-            self.log("[Step 2] Submitting Steam credentials...")
             self.page.locator("input[type='text']").first.fill(steam_username)
             self.page.locator("input[type='password']").fill(steam_password)
             
@@ -55,31 +54,28 @@ class SteamAutomationSession:
             else:
                 self.page.get_by_role("button", name="Sign in").click()
                 
-            self.page.wait_for_timeout(3500)
+            self.page.wait_for_timeout(3000)
             take_snapshot(self.page, "02_after_login_submit")
 
-            # 2. Account Direct Email Change
-            self.log("[Step 3] Navigating directly to Steam change email portal...")
-            self.page.goto("https://store.steampowered.com/account/changeemail/", timeout=45000)
-            self.page.wait_for_timeout(2000)
-            take_snapshot(self.page, "03_change_email_page")
+            # 2. Go to Steam Email Change
+            self.log("[Step 2] Navigating to Steam change email portal...")
+            self.page.goto("https://store.steampowered.com/account/changeemail/", timeout=35000)
+            self.page.wait_for_timeout(1500)
 
-            # If redirected to wizard, handle wizard buttons
-            self.log("[Step 4] Checking for verification request button...")
             wizard_btn = self.page.locator("a:has-text('Email'), button:has-text('Email'), .help_wizard_button, a:has-text('verification code')").first
             if wizard_btn.count() > 0:
                 wizard_btn.click()
-                self.page.wait_for_timeout(2000)
+                self.page.wait_for_timeout(1500)
 
             take_snapshot(self.page, "04_code_requested_from_steam")
-            self.log("[Step 5] Steam verification code dispatched to Outlook!")
+            self.log("[Step 3] Steam verification code dispatched to Outlook!")
 
-            # 3. Extract Outlook Code
-            self.log(f"[Step 6] Extracting code from Outlook ({current_email})...")
-            outlook_code = get_outlook_verification_code(current_email, current_email_password)
+            # 3. Read Outlook Web via Headless Browser directly (Joker solution)
+            self.log(f"[Step 4] Extracting code automatically from Outlook Web ({current_email})...")
+            outlook_code = get_outlook_verification_code(current_email, current_email_password, self.context)
             if not outlook_code:
-                raise Exception("Failed to retrieve code from Outlook inbox within timeout.")
-            self.log(f"[Step 7] Outlook verification code retrieved: [{outlook_code}]")
+                raise Exception("Could not read verification code from Outlook Web automatically.")
+            self.log(f"[Step 5] [SUCCESS] Retrieved Outlook code: [{outlook_code}]")
 
             # 4. Enter Outlook Code into Steam
             code_input = self.page.locator("input[type='text'], input[name='email_confirmation_code'], input.forgot_login_input").first
@@ -87,21 +83,20 @@ class SteamAutomationSession:
             
             continue_btn = self.page.locator("button:has-text('Continue'), input[type='submit'][value='Continue'], button[type='submit'], .btn_blue_steamui").first
             continue_btn.click()
-            self.page.wait_for_timeout(2500)
-            take_snapshot(self.page, "05_submitted_outlook_code")
+            self.page.wait_for_timeout(2000)
 
             # 5. Enter New Email Address
-            self.log(f"[Step 8] Entering New Email Address: {new_email}...")
+            self.log(f"[Step 6] Entering New Email Address: {new_email}...")
             new_email_input = self.page.locator("input[type='email'], input[name='email'], input[type='text']").first
             new_email_input.fill(new_email)
             
             submit_email_btn = self.page.locator("button:has-text('Change my email address'), button:has-text('Next'), button[type='submit'], input[type='submit']").first
             submit_email_btn.click()
-            self.page.wait_for_timeout(2500)
+            self.page.wait_for_timeout(2000)
             take_snapshot(self.page, "06_final_code_sent_to_target_email")
 
-            self.log(f"[Step 9] [SUCCESS] Steam sent final verification code to {new_email}!")
-            self.log("[Step 10] Browser is waiting for your 5-character code from Gmail...")
+            self.log(f"[Step 7] [SUCCESS] Steam sent final verification code to {new_email}!")
+            self.log("[Step 8] Waiting for your 5-character code from Gmail...")
 
             return {
                 "success": True,
@@ -116,7 +111,7 @@ class SteamAutomationSession:
             return {"success": False, "error": str(e)}
 
     def submit_final_verification_code(self, code: str) -> dict:
-        self.log(f"Entering final code [{code}] on the ACTIVE Steam page...")
+        self.log(f"Submitting final code [{code}] on the active page...")
         try:
             if not self.page or self.page.is_closed():
                 raise Exception("Browser page is not open.")
@@ -131,7 +126,7 @@ class SteamAutomationSession:
 
             confirm_btn = self.page.locator("button:has-text('Change my email address'), button:has-text('Submit'), input[type='submit'], button[type='submit'], .btn_blue_steamui").first
             confirm_btn.click()
-            self.page.wait_for_timeout(3000)
+            self.page.wait_for_timeout(2500)
             take_snapshot(self.page, "07_email_change_completed")
 
             self.log(f"[SUCCESS] EMAIL HAS OFFICIALLY CHANGED TO YOUR TARGET EMAIL!")

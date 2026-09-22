@@ -1,90 +1,74 @@
-import poplib
-import imaplib
-import email
 import re
 import time
-from playwright.sync_api import sync_playwright
 
-def get_code_via_pop3(email_address: str, email_password: str) -> str:
-    try:
-        pop = poplib.POP3_SSL("outlook.office365.com", 995, timeout=10)
-        pop.user(email_address)
-        pop.pass_(email_password)
-        num_messages = len(pop.list()[1])
-        if num_messages > 0:
-            for i in range(num_messages, max(0, num_messages - 5), -1):
-                raw = b"\n".join(pop.retr(i)[1]).decode(errors="ignore")
-                if "Steam" in raw:
-                    matches = re.findall(r'\b[A-Z0-9]{5}\b', raw)
-                    for m in matches:
-                        if m not in ["STEAM", "VALVE", "HTTPS", "LOGIN"]:
-                            pop.quit()
-                            return m
-        pop.quit()
-    except Exception as e:
-        print(f"[POP3] Notice: {e}")
+def extract_code_from_text(text: str) -> str:
+    # الكود في ستيم دائماً 5 أحرف أو أرقام كبيرة
+    matches = re.findall(r'\b[A-Z0-9]{5}\b', text)
+    blacklist = {"STEAM", "VALVE", "HTTPS", "LOGIN", "INBOX", "ENTER", "CLICK", "RESET", "HELP1", "ERROR"}
+    for m in matches:
+        if m not in blacklist and not m.isdigit(): # كود ستيم عادة يحتوي على أحرف وأرقام معاً
+            return m
+    for m in matches:
+        if m not in blacklist:
+            return m
     return None
 
-def get_code_via_browser(browser_context, email_address: str, email_password: str) -> str:
-    print(f"[OUTLOOK-WEB] Logging in via headless browser: {email_address}...")
+def get_outlook_verification_code(email_address: str, email_password: str, browser_context, max_wait_seconds: int = 40) -> str:
+    print(f"[OUTLOOK-HEADLESS] Opening Outlook Web for {email_address}...")
     page = browser_context.new_page()
     try:
-        page.goto("https://outlook.live.com/mail/0/", timeout=30000)
+        page.goto("https://login.live.com/", timeout=30000)
+        page.wait_for_timeout(1000)
+
+        # 1. إدخال الإيميل
+        email_field = page.locator("input[type='email'], input[name='loginfmt']")
+        email_field.fill(email_address)
+        page.locator("button:has-text('Next'), input[type='submit'][value='Next']").click()
+        page.wait_for_timeout(1500)
+
+        # 2. إدخال الباسورد
+        pass_field = page.locator("input[type='password'], input[name='passwd']")
+        pass_field.fill(email_password)
+        page.locator("button:has-text('Sign in'), input[type='submit'][value='Sign in']").click()
         page.wait_for_timeout(2000)
 
-        # Login flow
-        if "login.live.com" in page.url or page.locator("input[type='email']").count() > 0:
-            page.locator("input[type='email']").fill(email_address)
-            page.locator("button:has-text('Next'), input[type='submit']").click()
+        # 3. تخطي رسالة البقاء مسجلاً (Stay signed in?)
+        stay_btn = page.locator("button:has-text('Yes'), button:has-text('No'), input[value='Yes'], input[value='No']").first
+        if stay_btn.count() > 0:
+            stay_btn.click()
             page.wait_for_timeout(2000)
 
-            page.locator("input[type='password']").fill(email_password)
-            page.locator("button:has-text('Sign in'), input[type='submit']").click()
-            page.wait_for_timeout(2500)
-
-            # Stay signed in prompt?
-            if page.locator("button:has-text('Yes'), input[type='submit']").count() > 0:
-                page.locator("button:has-text('Yes'), input[type='submit']").first.click()
-                page.wait_for_timeout(2500)
-
-        # Look for Steam email in list
-        print("[OUTLOOK-WEB] Reading inbox list...")
-        steam_item = page.locator("span:has-text('Steam'), div:has-text('Steam Support')").first
-        if steam_item.count() > 0:
-            steam_item.click()
+        # 4. الذهاب المباشر إلى صندوق الوارد Outlook Web
+        print("[OUTLOOK-HEADLESS] Navigating to inbox...")
+        page.goto("https://outlook.live.com/mail/0/inbox", timeout=30000)
+        
+        start_time = time.time()
+        while time.time() - start_time < max_wait_seconds:
             page.wait_for_timeout(2000)
+            
+            # البحث عن رسالة ستيم
+            steam_msg = page.locator("div[role='option']:has-text('Steam'), div:has-text('Steam Support'), span:has-text('Steam')").first
+            if steam_msg.count() > 0:
+                print("[OUTLOOK-HEADLESS] Steam email found! Clicking to read...")
+                steam_msg.click()
+                page.wait_for_timeout(1500)
 
-            text_content = page.content()
-            matches = re.findall(r'\b[A-Z0-9]{5}\b', text_content)
-            for m in matches:
-                if m not in ["STEAM", "VALVE", "HTTPS", "LOGIN", "INBOX"]:
-                    print(f"[OUTLOOK-WEB] Found code: {m}")
+                # قراءة نص الرسالة واستخراج الكود
+                content = page.content()
+                code = extract_code_from_text(content)
+                if code:
+                    print(f"[OUTLOOK-HEADLESS] Successfully retrieved Steam code: [{code}]")
                     page.close()
-                    return m
+                    return code
+
+            print("[OUTLOOK-HEADLESS] Waiting for Steam email to appear...")
+
         page.close()
     except Exception as e:
-        print(f"[OUTLOOK-WEB] Error reading web inbox: {e}")
+        print(f"[OUTLOOK-HEADLESS] Error: {e}")
         try:
             page.close()
         except Exception:
             pass
-    return None
-
-def get_outlook_verification_code(email_address: str, email_password: str, browser_context=None, max_attempts: int = 8) -> str:
-    print(f"[OUTLOOK] Checking inbox for: {email_address} (Universal Method)...")
-    for attempt in range(max_attempts):
-        # 1. Try POP3 first (fastest, takes 1 second)
-        code = get_code_via_pop3(email_address, email_password)
-        if code:
-            print(f"[OUTLOOK] Successfully extracted via POP3: [{code}]")
-            return code
-
-        time.sleep(2)
-
-    # 2. If POP3 fails, fallback to web-based extraction if browser context is passed
-    if browser_context:
-        web_code = get_code_via_browser(browser_context, email_address, email_password)
-        if web_code:
-            return web_code
-
+            
     return None
