@@ -70,7 +70,10 @@ def health_and_logs():
 @app.get("/api/latest-screenshot")
 @app.get("/api/screenshot")
 @app.get("/screenshot")
-def get_latest_screenshot():
+@app.get("/api/screenshot/{task_id}")
+@app.get("/api/bot/api/screenshot/{task_id}")
+@app.get("/api/bot/api/screenshot")
+def get_latest_screenshot(task_id: str = None):
     latest_img = os.path.join(SCREENSHOTS_DIR, "latest.png")
     if os.path.exists(latest_img):
         return FileResponse(latest_img, media_type="image/png")
